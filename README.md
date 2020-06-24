@@ -8,7 +8,7 @@ The lognormal probability density function (pdf) `f_L` is often defined in terms
 If we redefine `f_L` in terms of mode `m` and standard deviation `sigma` as `f_L'`, then the bounded lognormal pdf `f_BL` is the piecewise function:
 
 ```
-f_BL(x, m, \sigma, upper) =
+f_BL(x, m, sigma, upper) =
     f_L'(x, m, sigma) for x <= m, and
     f_L'(upper-x, upper-m, sigma) for x > m
 ```
