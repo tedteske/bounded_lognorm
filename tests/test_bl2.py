@@ -62,11 +62,12 @@ TEST_CASES = [
 
 # Each dial position must meet these. Set generously above the measured error
 # (roughly 3-20x margin) so the suite is not flaky, but tight enough to catch a
-# real regression. Measured worst-case errors (Nov 2026), for reference:
-#   fast     cdf 5e-8   ppf 6e-6
-#   balanced cdf 8e-12  ppf 4e-7
-#   precise  cdf 4e-13  ppf 2e-8
-#   exact    cdf 8e-14  ppf 7e-13
+# real regression. Measured worst-case errors after the Phase 2 fixes
+# (Nov 2026), for reference -- cdf is now at the gold floor everywhere:
+#   fast     cdf 7e-14  ppf 2e-6
+#   balanced cdf 8e-14  ppf 1e-7
+#   precise  cdf 7e-14  ppf 4e-9
+#   exact    cdf 8e-14  ppf 9e-14
 #                                   (cdf_tol,  ppf_roundtrip_tol)
 DIAL_TOLERANCES = {
     'fast':     (2e-7,  2e-5),
@@ -199,7 +200,12 @@ for level in ('fast', 'balanced', 'precise', 'exact'):
 # SUITE C -- the dial actually moves: accuracy improves left -> right
 # ---------------------------------------------------------------------------
 _order = ['fast', 'balanced', 'precise', 'exact']
-_mono = all(_cdf_worst_by_level[a] >= _cdf_worst_by_level[b] - 1e-15
+# Since the Phase 2 graded panels, every position reaches the gold
+# reference's own accuracy (~6e-14, set by quad's epsrel=1e-13), so
+# positions may tie there. Differences below this floor are noise, not a
+# regression; a position falling ABOVE its neighbour by more still fails.
+GOLD_CDF_FLOOR = 1e-13
+_mono = all(_cdf_worst_by_level[a] >= _cdf_worst_by_level[b] - GOLD_CDF_FLOOR
             for a, b in zip(_order, _order[1:]))
 _check("C1 cdf accuracy monotone in dial", None, _mono,
        " >= ".join(f"{_cdf_worst_by_level[l]:.1e}" for l in _order))
@@ -258,14 +264,187 @@ if 'bl2_old' in dir():
         c_new = np.asarray(ref.cdf(xs, *case)).ravel()
         _check("B2 cdf==original", case,
                np.max(np.abs(c_old - c_new)) < 1e-5)
-        ok = True
-        for fn in ('mean', 'var', 'std', 'entropy'):
-            a = float(np.ravel(getattr(bl2_old, fn)(*case))[0])
-            b = float(np.ravel(getattr(ref, fn)(*case))[0])
-            ok &= abs(a - b) <= 1e-6 * max(abs(a), 1.0)
-        _check("B3 stats==original", case, ok)
+        # B3 (stats == original) was retired in Phase 2: the original grid-sum
+        # moments were wrong (see SUITE D, D1), so equality with them is no
+        # longer the goal. D1 checks the moments against a 30-digit reference.
 else:
     _check("B (skipped: bl2_old not defined)", None, True)
+
+
+# ---------------------------------------------------------------------------
+# SUITE D -- Phase 2 math fixes (see docs/phase2_math_verification.md)
+#
+# Gold values below come from an independent 30-digit mpmath model of BL2
+# (bisection root of the lognorm_params quartic; tanh-sinh quadrature with
+# break points graded toward the mode and both bounds). They do not use any
+# of the library's numerics, so these are genuine outside checks.
+#
+# Mutation-checked (Nov 2026): reverting each fix makes these fail --
+#   stable lognorm_params      -> D1, D2, D3, D4
+#   graded panels (geometric)  -> D1, D2, D3
+#   quadrature moments         -> D1, D5, D7
+#   (The equal panels within [a, b] are NOT test-guarded: they improve cdf
+#   accuracy ~4x only for peaks narrower than 1e-8 of the coordinate scale,
+#   i.e. below the float64 resolution floor where the warning already fires.
+#   They are a cheap margin, not a requirement.)
+#   _argcheck / resolution warning -> D6
+# Infinite bounds and invalid ignore_checks inputs are rejected by TWO
+# layers (_argcheck_final and lognorm_params' own validation); those D6
+# checks fail only when both are reverted.
+# ---------------------------------------------------------------------------
+import warnings
+
+# (mode, sigma, lower, upper): (mean, variance, skewness, excess kurtosis)
+GOLD_MOMENTS = {
+    (5, 10, -5, 20): (5.872972571882167, 19.054849479242379,
+                      0.15954213718045105, -0.68478377366183439),
+    (1, 3, 0, 10): (2.1396098352486822, 1.8396635083675718,
+                    0.79512924305855025, 0.14209096331446325),
+    (75, 5, 70, 100): (76.626189882159016, 10.139892202442778,
+                       0.60129506294243963, -0.019570325749688087),
+    (1, 0.062, 0, 100): (1.0028499746947212, 0.0038107946604830729,
+                         0.091946465764579388, 0.0044743328551683669),
+    (950, 1, -1000, 1000): (949.98538639650817, 0.99905538019237465,
+                            -0.029227481656348268, 0.0003642045631913171),
+    (0, 1, -1000, 1000): (0.0, 0.9999910001032486,
+                          0.0, -1.0999796004540886e-5),
+}
+
+# Edge cases: sigma -> 0, bounds -> infinity, mode at a bound.
+# (mode, sigma, lower, upper): [(q, x_q)] with cdf(x_q) = q exactly.
+GOLD_EDGE_QUANTILES = {
+    (5, 1e-07, 0, 10): [
+        (0.01, 4.9999997673652125959), (0.25, 4.9999999325510249804),
+        (0.5, 5.0), (0.75, 5.0000000674489750196),
+        (0.99, 5.0000002326347874041)],
+    (0, 1, -1e8, 1e8): [
+        (0.01, -2.3263478740408397891), (0.25, -0.67448975019608151836),
+        (0.5, 0.0), (0.75, 0.67448975019608151836),
+        (0.99, 2.3263478740408394636)],
+    (0.01, 1, 0, 10): [
+        (0.01, 0.004345239470979309957), (0.25, 0.099342152853396613298),
+        (0.5, 0.29006229483283872137), (0.75, 0.68243148648886028494),
+        (0.99, 2.2643742273980705085)],
+    (1e-06, 1, 0, 10): [
+        (0.01, 0.000075363568448164057126), (0.25, 0.016037531077096011798),
+        (0.5, 0.098290690280768484193), (0.75, 0.39478898373188596456),
+        (0.99, 2.069617915780585469)],
+    (9.999999, 1, 0, 10): [
+        (0.01, 7.9303820842294751252), (0.25, 9.6052110162812569493),
+        (0.5, 9.9017093097259152033), (0.75, 9.9839624689247608057),
+        (0.99, 9.9999246364315713788)],
+    (0, 1, -1e7, 3): [
+        (0.01, -2.6572394326077586439), (0.25, -0.81573708299496315504),
+        (0.5, -0.15887740416937144566), (0.75, 0.42902747846723737558),
+        (0.99, 1.5459321163183662469)],
+}
+# Float64 resolution floor for these cases is ~2e-8 (the +-1e8 bounds case).
+EDGE_CDF_TOL = 5e-8
+
+# sigma/mode -> sigma_N (mode = 1).
+GOLD_PARAMS = {
+    1e-12: 9.9999999999999997989e-13, 1e-08: 9.9999999999999984592e-9,
+    1e-4: 0.000099999998250000081146, 1.0: 0.56770116784363766186,
+    1e4: 2.1465498943674091943, 1e8: 3.0348583776844012325,
+    1e12: 3.7169222224798216248,
+}
+
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', RuntimeWarning)
+    for level in ('fast', 'balanced', 'precise', 'exact'):
+        dist = bounded_lognorm2_gen(precision=level)
+        _, ppf_tol = DIAL_TOLERANCES[level]
+
+        # D1: moments match the 30-digit reference (all dial positions).
+        for case, (m, v, s, k) in GOLD_MOMENTS.items():
+            mm, vv, ss, kk = dist.stats(*case, moments='mvsk')
+            em = abs(mm - m) / np.sqrt(v)
+            ev = abs(vv - v) / v
+            ok = em < 1e-10 and ev < 1e-10 and abs(ss - s) < 1e-10 \
+                and abs(kk - k) < 1e-9
+            _check(f"[{level}] D1 moments==gold", case, ok,
+                   f"mean {em:.1e}sd var {ev:.1e} skew {abs(ss-s):.1e} "
+                   f"kurt {abs(kk-k):.1e}")
+
+        # D2: cdf at edge cases matches the reference quantiles.
+        # D3: ppf round-trip holds at the edge cases too.
+        for case, pairs in GOLD_EDGE_QUANTILES.items():
+            q = np.array([p[0] for p in pairs])
+            xq = np.array([p[1] for p in pairs])
+            try:
+                err = np.max(np.abs(np.asarray(dist.cdf(xq, *case)).ravel()
+                                    - q))
+                rt = np.max(np.abs(np.asarray(
+                    dist.cdf(dist.ppf(q, *case), *case)).ravel() - q))
+            except Exception:                            # crash = failure
+                err = rt = float('inf')
+            _check(f"[{level}] D2 edge cdf==gold", case,
+                   err < EDGE_CDF_TOL, f"err={err:.1e}")
+            _check(f"[{level}] D3 edge ppf round-trip", case,
+                   rt < max(ppf_tol, EDGE_CDF_TOL), f"err={rt:.1e}")
+
+# D4: lognorm_params -- reference values, the quartic itself across 300
+# decades of sigma/mode, and scale invariance (depends on sigma/mode only).
+_worst = max(abs(float(lognorm_params(1.0, r)[1]) - s) / s
+             for r, s in GOLD_PARAMS.items())
+_check("D4 lognorm_params==gold", None, _worst < 1e-13, f"rel={_worst:.1e}")
+_res = 0.0
+for lr in range(-150, 151, 5):
+    mu, sN = lognorm_params(1.0, 10.0 ** lr)
+    t = float(sN) ** 2                      # g = e^t ; g^4 - g^3 = r^2
+    _res = max(_res, abs(3 * t + np.log(np.expm1(t)) - 2 * lr * np.log(10))
+               / max(1.0, abs(2 * lr * np.log(10))))
+_check("D4 quartic residual, r=1e-150..1e150", None, _res < 1e-13,
+       f"rel={_res:.1e}")
+_s_ref = float(lognorm_params(1.0, 1.0)[1])
+_check("D4 scale invariance", None,
+       all(abs(float(lognorm_params(c, c)[1]) - _s_ref) < 1e-14
+           for c in (1e-300, 1e-30, 1e30, 1e300)))
+
+# D5: the mean is shift-equivariant: mean(X + c) = mean(X) + c.
+_d = bounded_lognorm2_gen()
+_base = (75, 5, 70, 100)
+_m0, _v0 = _d.stats(*_base)
+_shift_err = max(abs(float(_d.mean(_base[0] + c, 5, _base[2] + c,
+                                   _base[3] + c)) - c - _m0) / np.sqrt(_v0)
+                 for c in (-1e4, 1e3, 1e4))
+_check("D5 mean shift-equivariant", None, _shift_err < 1e-10,
+       f"err={_shift_err:.1e}sd")
+
+# D6: argument guards.
+def _raises(fn):
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            fn()
+    except ValueError:
+        return True
+    return False
+
+_check("D6 infinite bound rejected", None,
+       _raises(lambda: _d.pdf(0, 0, 1, -np.inf, np.inf))
+       and _raises(lambda: _d.cdf(0, 0, 1, -np.inf, 5)))
+_check("D6 invalid params rejected under ignore_checks", None,
+       _raises(lambda: _d.pdf(5, 5, -1, 0, 10, ignore_checks=True))
+       and _raises(lambda: _d.pdf(5, 0, 1, 0, 10, ignore_checks=True)))
+_ac = _d._argcheck
+_check("D6 _argcheck encodes the constraints", None,
+       bool(_ac(5, 10, -5, 20)) and bool(_ac(5, 1, None, None))
+       and not any(bool(_ac(*a)) for a in [(5, -1, -5, 20), (5, 0, -5, 20),
+                                           (30, 1, -5, 20), (5, 1, 20, -5),
+                                           (5, np.inf, -5, 20)]))
+with warnings.catch_warnings(record=True) as _w:
+    warnings.simplefilter('always')
+    _d.pdf(5, 5, 1e-10, 0, 10)
+_check("D6 resolution warning for tiny sigma", None,
+       any(issubclass(w.category, RuntimeWarning) for w in _w))
+
+# D7: unbounded (None) moments -- the default-parameter case that used to
+# return var(100, 1) = 2.68 -- match the reference and are location-free.
+_m, _v, _, _ = GOLD_MOMENTS[(0, 1, -1000, 1000)]
+_ok = all(abs(float(_d.var(mo, 1)) - _v) / _v < 1e-10
+          and abs(float(_d.mean(mo, 1)) - mo) < 1e-10 for mo in (0, 5, 100))
+_check("D7 unbounded moments==gold", None, _ok)
 
 
 # ---------------------------------------------------------------------------

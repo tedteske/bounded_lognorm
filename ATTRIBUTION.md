@@ -16,8 +16,8 @@ This notebook contains work of three distinct kinds. They are separated below so
 
 - *Phase 1 CDF analysis:* the demonstration that the BL2 CDF admits no elementary closed form, via the observation that no change of variable linearizes both `ln x` and `ln(upper − x)` simultaneously (they are coupled by `e^w + e^v = u`); together with the catalogue of tractable special cases and the saddle-point route.
 - *Performance refactor of the class:* hoisting the shape parameters and normalizing constant `Z` out of `pdf` (with `lru_cache`); vectorized composite Gauss–Legendre quadrature; restriction of all integration to an *effective support* located by bisection outward from the mode; the cached PCHIP cumulative grid backing `ppf`/`rvs`/`median`.
-- *Correction to the normalizing constant* of the unnormalized density (see "Behavioural change" below).
 - The regression test cell.
+- *Phase 2 math verification and fixes:* proofs that the mode of BL2 is exactly `mode` and that BL2 is C∞ (BL is only C¹), that Z ≤ 1 (a Bhattacharyya coefficient), and of the effective-support truncation bound; a stable, scale-free solver for the `lognorm_params` quartic (same equation, new numerics); mode-graded quadrature panels; moments by quadrature in place of the grid sum; argument guards; regression Suite D against a 30-digit reference. See `docs/phase2_math_verification.md`.
 
 **C. Third-party work — cited below**
 
@@ -25,9 +25,15 @@ Attribution suggestion, not a rule: the usual convention in published work is th
 
 A caveat worth recording, in the same spirit: the Phase 1 non-closed-form result is an argument plus a symbolic check, **not a proof**. It shows no *elementary* antiderivative was found and explains structurally why one is not expected. It does not rule out a closed form in terms of special functions. Treat it as a well-supported working conclusion.
 
-### Behavioural change from the original
+### Behavioural changes from the original
 
-The unnormalized density carried `1/(2π·√(s₁s₂))` where the definition (the geometric mean of two lognormal pdfs) gives `1/√(2π·s₁s₂)`. This has been corrected. The factor cancels under normalization, so `pdf`, `cdf`, `ppf`, `rvs`, and all statistics are **unaffected**. Only `pdf(..., normed=False)` and `cdf(..., normed=False)` change — by a constant factor of √(2π).
+*Correction to an earlier version of this note.* It previously said the original's unnormalized density carried `1/(2π·√(s₁s₂))`. It did not: the original computed `sqrt(lognorm_pdf × lognorm_pdf)`, which gives the correct `1/√(2π·s₁s₂)`. The wrong constant existed only in an intermediate draft of the 2026 refactor and was fixed before release, so `normed=False` output is unchanged from the original.
+
+Phase 2 (Nov 2026) intentionally changes these results:
+
+- **`mean`, `var`, `std`, `stats`, `moment`, `entropy`.** The original grid-sum moments were biased (weights of `(upper − lower)/n` instead of `/(n − 1)`, never renormalized), applied a sample-skewness correction to a population moment, and aliased narrow peaks on a fixed 1001-point grid. They are now integrated by quadrature and match a 30-digit reference to ~1e-12. Example: `var(100, 1)` was 2.68; it is now 0.99999.
+- **Extreme parameters.** sigma/mode outside roughly 1e-5 to 1e2 (sigma → 0, very wide bounds, mode very near a bound) previously lost accuracy or returned NaN; results there now agree with the reference down to the float64 resolution floor.
+- **Invalid inputs raise.** Infinite bounds, and invalid parameters passed with `ignore_checks=True`, now raise `ValueError` instead of returning NaN or a plausible-looking number. A `RuntimeWarning` flags sigma below 1e-8 of the coordinate scale.
 
 ### Link audit
 

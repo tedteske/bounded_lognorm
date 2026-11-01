@@ -18,17 +18,22 @@ Attribution (full detail and references in ATTRIBUTION.md):
   Optimization, 2026 -- Ted Teske with Claude (Anthropic):
     cached hoisting of the normalizing constant, vectorized composite
     Gauss-Legendre quadrature over the effective support, the cached PCHIP
-    cumulative grid for ppf/rvs, the precision dial, the _reference_unnorm /
-    _unnorm_pdf split, and the correction of the unnormalized density constant
-    from 1/(2*pi*sqrt(s1 s2)) to 1/sqrt(2*pi*s1 s2) (cancels under
-    normalization; affects only normed=False output).
+    cumulative grid for ppf/rvs, the precision dial, and the
+    _reference_unnorm / _unnorm_pdf split. (The fused form carries
+    1/sqrt(2*pi*s1 s2), exactly as the original sqrt(lognorm_pdf *
+    lognorm_pdf) did; an intermediate draft had 1/(2*pi*sqrt(s1 s2)), which
+    was corrected before release. normed=False output matches the original.)
+  Phase 2 math fixes, 2026 -- Ted Teske with Claude (Anthropic):
+    a stable, scale-free solver for the lognorm_params quartic; mode-graded
+    quadrature panels; moments by quadrature instead of a grid sum; argument
+    guards. See docs/phase2_math_verification.md.
   Third-party helpers retain their inline citations (Stack Overflow, CC BY-SA).
 -----------------------------------------------------------------------------
 """
+import warnings
 from functools import lru_cache
 
 import numpy as np
-from scipy.integrate import cumulative_trapezoid
 from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq, curve_fit, minimize
 from scipy.special import erf, erfinv
@@ -36,7 +41,9 @@ from scipy.stats import rv_continuous
 
 
 # ===========================================================================
-# Helper functions -- UNCHANGED from the original implementation (T. Teske).
+# Helper functions -- from the original implementation (T. Teske). All are
+# unchanged except lognorm_params, whose quartic is now solved by a stable
+# root-finder (Phase 2); its derivation and references are kept as written.
 # ===========================================================================
 
 def lognorm_pdf(x, mu_N=0, sigma_N=1):
@@ -204,6 +211,25 @@ def lognorm_params(mode, sigma):
     [2] Numerical approximation from Warren Weckesser's answer to question at
         https://stackoverflow.com/questions/41464753. Accessed 21 Oct. 2020.
 
+    Notes
+    -----
+    Derivation (unchanged): with g = exp(sigma_N^2), mode = exp(mu_N -
+    sigma_N^2) gives mu_N = ln(mode * g), and Var = mode^2 g^3 (g - 1), so
+    SD = sigma is the quartic g^4 - g^3 - (sigma/mode)^2 = 0. It has exactly
+    one positive root, and that root exceeds 1.
+
+    Numerics (Phase 2): the closed form [1] is algebraically exact but loses
+    precision in float64 -- it cancels catastrophically for sigma/mode below
+    ~1e-5, returns NaN below ~1e-9 or above ~1e6, and overflows m^8 near
+    mode ~ 1e30. The same quartic is therefore solved here for
+    t = sigma_N^2 = ln g in the equivalent form
+
+        3 t + log(expm1(t)) = 2 log(sigma / mode),
+
+    whose left side is strictly increasing in t, so the root is unique. Since
+    log t <= LHS <= 4t + log t, the root is bracketed analytically and found
+    with brentq in tau = log t. Depends only on sigma/mode (scale-free);
+    ~1e-14 relative accuracy for sigma/mode from 1e-150 to 1e150.
     """
     # Converts parameters to floats in case exponents below too big for ints.
     # https://stackoverflow.com/questions/67097840
@@ -213,41 +239,31 @@ def lognorm_params(mode, sigma):
         return inputobject
 
     mode, sigma = float(GetItem(mode)), float(GetItem(sigma))
+    if not (mode > 0 and sigma > 0 and np.isfinite(mode)
+            and np.isfinite(sigma)):
+        raise ValueError(
+            "lognorm_params requires finite mode > 0 and sigma > 0 "
+            "(mode is measured from the bound); got mode=%r, sigma=%r"
+            % (mode, sigma))
 
-    # Finds the roots of the polynomial g^4 - g^3 - sigma^2/mode^2,
-    # where g = e^(variance of the associated Normal distribution),
-    # and uses just the real, positive root.
-    try:
-        # This is the exact form [1].
-        a = np.cbrt(np.sqrt(81 * mode**8 * sigma**4 +
-                            768 * mode**6 * sigma**6) -
-                    9 * mode**4 * sigma**2)
-        b = np.cbrt(2 / 3) * sigma**2
-        c = np.cbrt(2 / 3)**2 * 2
-        d = np.sqrt((-16 * b / a) + (c * a / mode**2) + 1)
+    log_r = np.log(sigma) - np.log(mode)      # log(sigma/mode); no overflow
 
-        g1 = d / 4
-        g2 = (4 * b / a) - a / (np.cbrt(18) * mode**2)
-        g3 = 1 / (2 * d)
+    def _F(tau):                              # LHS - RHS, t = exp(tau)
+        t = np.exp(tau)
+        return 3.0 * t + np.log(np.expm1(t)) - 2.0 * log_r
 
-        g = g1 + np.sqrt(g2 + g3 + 0.5) / 2 + 0.25  # the real, positive root
+    # Bracket from log t <= F(t) + 2 log r <= 4t + log t.
+    if log_r < 0:
+        tau_lo, tau_hi = 2.0 * log_r - 10.0, 2.0 * log_r
+    else:
+        tau_lo = -10.0
+        tau_hi = np.log(min(np.exp(min(2.0 * log_r, 700.0)),
+                            0.5 * log_r + 1.0))
+    t = np.exp(brentq(_F, tau_lo, tau_hi, xtol=1e-15, rtol=1e-15,
+                      maxiter=200))
 
-        # Whereas the above is the real, positive root (the one we'll use),
-        # negative or complex roots are commented below:
-        # g =  g1 - np.sqrt(g2 + g3 + 0.5) / 2 + 0.25
-        # g = -g1 + np.sqrt(g2 - g3 + 0.5) / 2 + 0.25
-        # g = -g1 - np.sqrt(g2 - g3 + 0.5) / 2 + 0.25
-
-    except:
-        # And this is a slightly slower, numerical approximation of g [2].
-        # It is however much more concise.
-        p = np.poly1d([1, -1, 0, 0, -(sigma / mode)**2])
-        r = p.roots
-        g = r[(r.imag == 0) & (r.real > 0)].real
-
-    # Plugs g into the expressions for sigma_N and mu_N.
-    sigma_N = np.sqrt(np.log(g))
-    mu_N = np.log(mode * g)
+    sigma_N = np.sqrt(t)                      # = sqrt(ln g)
+    mu_N = np.log(mode) + t                   # = ln(mode * g)
     return mu_N, sigma_N
 
 
@@ -319,39 +335,45 @@ def _unnorm_pdf(x, mu1, s1, mu2, s2, lower, u):
     return y
 
 
-def _gl_integrate(a, b, args, n, panels=4):
+def _graded_edges(a, b, mode, lower, upper, k_max=16, n_even=4):
     """
-    Vectorized composite Gauss-Legendre integration of _unnorm_pdf from `a` to
-    each element of `b`.
+    Panel edges for composite Gauss-Legendre quadrature over [a, b].
 
-    Two things matter here:
-    * Composite (`panels` sub-intervals) rather than a single rule, so that a
-      narrow peak inside a wide interval is still resolved.
-    * Fully vectorized: the density is evaluated ONCE on an (N, panels, n) node
-      array, instead of running one Python-level quadrature per endpoint.
+    The two lognormal factors vary on the length scales (mode - lower) and
+    (upper - mode), so edges are graded geometrically -- half a decade per
+    step, down to 10**(-k_max/2) of each scale -- toward the mode and toward
+    each bound. When the mode sits close to a bound, this resolves a feature
+    of width ~(mode - lower) that equal panels cannot see.
+
+    The effective support [a, b] is also split into `n_even` equal panels on
+    each side of the mode. That covers the opposite regime, a peak much
+    narrower than (mode - lower) (sigma -> 0, or wide bounds), where the
+    geometric edges stop short of the peak's own width. Measured benefit is
+    modest (~4x) and appears only below ~1e-8 relative width, where float64
+    resolution already limits accuracy; it is a cheap margin, not a
+    requirement, and no test depends on it.
+
+    An edge always sits AT the mode, so no panel straddles the peak.
     """
-    xn, wn = _gauss_legendre(n)
-    b = np.atleast_1d(np.asarray(b, dtype=float))
-
-    # Panel edges for each endpoint: shape (N, panels + 1)
-    frac = np.linspace(0.0, 1.0, panels + 1)
-    edges = a + (b - a)[:, None] * frac[None, :]
-    lo, hi = edges[:, :-1], edges[:, 1:]              # (N, panels)
-
-    mid = (hi + lo) / 2.0
-    half = (hi - lo) / 2.0
-    pts = mid[..., None] + half[..., None] * xn       # (N, panels, n)
-    vals = _unnorm_pdf(pts.ravel(), *args).reshape(pts.shape)
-    return (vals * wn).sum(axis=2).__mul__(half).sum(axis=1)
+    m, r = mode - lower, upper - mode
+    q = 10.0 ** (-np.arange(0, k_max + 1) / 2.0)
+    e = np.concatenate([
+        [a, b, mode],
+        lower + m * q, mode - m * q, mode + r * q, upper - r * q,
+        np.linspace(a, mode, n_even + 1), np.linspace(mode, b, n_even + 1),
+    ])
+    e = np.unique(np.clip(e, a, b))
+    return e
 
 
 @lru_cache(maxsize=64)
-def _prep(mode, sigma, lower, upper, n_quad):
+def _panel_table(mode, sigma, lower, upper, n_quad):
     """
     Hoisted, cached setup for one parameter set.
 
     Computes the underlying normal parameters for both lognormal factors, the
-    effective support, and the normalizing constant Z exactly once.
+    effective support, the graded panel edges, and the integral of the
+    unnormalized density over every panel -- exactly once.
 
     In the original implementation Z was recomputed inside every single pdf()
     call -- including at every quadrature node of every cdf() point -- even
@@ -360,9 +382,14 @@ def _prep(mode, sigma, lower, upper, n_quad):
 
     Returns
     -------
-    args : tuple -> (mu1, s1, mu2, s2, lower, u), the args for _unnorm_pdf
-    a, b : float -> effective support; g is negligible outside it
-    Z    : float -> integral of the unnormalized density over the support
+    args  : tuple   -> (mu1, s1, mu2, s2, lower, u), the args for _unnorm_pdf
+    a, b  : float   -> effective support; g is negligible outside it
+    edges : ndarray -> panel edges over [a, b] (see _graded_edges)
+    cum   : ndarray -> integral of g from a to each edge; cum[-1] == Z
+    nodes, weights : ndarray -> every GL node and its weight * g(node), used
+                      for the moments (sum(weights) == Z)
+
+    The arrays are shared through the cache: callers must not modify them.
     """
     u = upper - lower
     m = mode - lower
@@ -372,8 +399,68 @@ def _prep(mode, sigma, lower, upper, n_quad):
             float(lower), float(u))
 
     a, b = _effective_support(args, mode, lower, upper)
-    Z = float(_gl_integrate(a, [b], args, n_quad)[0])
-    return args, float(a), float(b), Z
+    edges = _graded_edges(a, b, mode, lower, upper)
+
+    xn, wn = _gauss_legendre(n_quad)
+    mid = (edges[1:] + edges[:-1]) / 2.0
+    half = (edges[1:] - edges[:-1]) / 2.0
+    nodes = mid[:, None] + half[:, None] * xn                  # (P, n)
+    weights = (half[:, None] * wn) * _unnorm_pdf(
+        nodes.ravel(), *args).reshape(nodes.shape)
+    cum = np.concatenate(([0.0], np.cumsum(weights.sum(axis=1))))
+    for arr in (edges, cum, nodes, weights):
+        arr.setflags(write=False)
+    return args, float(a), float(b), edges, cum, nodes.ravel(), weights.ravel()
+
+
+def _prep(mode, sigma, lower, upper, n_quad):
+    """Shape args, effective support and Z: (args, a, b, Z)."""
+    args, a, b, _e, cum, _n, _w = _panel_table(mode, sigma, lower, upper,
+                                               n_quad)
+    return args, a, b, float(cum[-1])
+
+
+def _gl_cdf(x, mode, sigma, lower, upper, n_quad):
+    """
+    Unnormalized integral of g from a to each x (x already clipped to [a, b]).
+
+    Whole panels below x come from the cached table; only the partial panel
+    [edge_k, x] is integrated fresh, with one n_quad-point Gauss-Legendre rule.
+    The partial piece lies inside a single graded panel, so it is at least as
+    well resolved as that panel.
+    """
+    args, _a, _b, edges, cum, _n, _w = _panel_table(mode, sigma, lower, upper,
+                                                    n_quad)
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    k = np.clip(np.searchsorted(edges, x, side='right') - 1,
+                0, len(edges) - 2)
+    lo = edges[k]
+    xn, wn = _gauss_legendre(n_quad)
+    mid = (x + lo) / 2.0
+    half = (x - lo) / 2.0
+    pts = mid[:, None] + half[:, None] * xn
+    vals = _unnorm_pdf(pts.ravel(), *args).reshape(pts.shape)
+    return cum[k] + (vals * wn).sum(axis=1) * half
+
+
+def _gl_moments(mode, sigma, lower, upper, n_quad):
+    """
+    Mean, variance, skewness and excess kurtosis by the same graded
+    Gauss-Legendre rule the cdf uses -- population moments, no grid.
+
+    Weights are renormalized on the same nodes (so the rule integrates the
+    density to exactly 1), and the mean is accumulated as an offset from the
+    mode, which keeps it accurate when |mode| >> sigma.
+    """
+    _args, _a, _b, _e, _cum, x, w = _panel_table(mode, sigma, lower, upper,
+                                                 n_quad)
+    p = w / w.sum()
+    mean = mode + np.sum(p * (x - mode))
+    d = x - mean
+    var = np.sum(p * d ** 2)
+    skew = np.sum(p * d ** 3) / var ** 1.5
+    kurt = np.sum(p * d ** 4) / var ** 2 - 3.0
+    return float(mean), float(var), float(skew), float(kurt)
 
 
 def _effective_support(args, mode, lower, upper, tol=1e-14):
@@ -413,27 +500,36 @@ def _effective_support(args, mode, lower, upper, tol=1e-14):
 @lru_cache(maxsize=32)
 def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
     """
-    Cached one-pass CDF/PPF grid.
+    Cached CDF/PPF grid.
 
-    Evaluates the density on a fine grid once, integrates it cumulatively,
-    normalizes, and wraps the result in monotone (PCHIP) splines. This yields
-    both cdf and ppf from a single density pass, which is what makes ppf/rvs
-    fast -- previously ppf ran a full quadrature at each of n grid points.
+    Places n_grid uniform points over the effective support plus n_grid more
+    spread across the graded panels (dense wherever the density changes
+    fastest),
+    evaluates the cdf there with the panel-table quadrature, and wraps the
+    result in monotone (PCHIP) splines. Both cdf and ppf then come from one cached pass, which is what
+    makes ppf/rvs fast.
 
     Returns (cdf_spline, ppf_spline, a, b) where (a, b) is the effective
     support; outside it the cdf is 0 or 1 by construction.
     """
-    args, a, b, _ = _prep(mode, sigma, lower, upper, n_quad)
-
-    xs = np.linspace(a, b, n_grid)
-    ys = _unnorm_pdf(xs, *args)
-
-    F = cumulative_trapezoid(ys, xs, initial=0.0)
-    total = F[-1]
-    if total <= 0:
+    _args, a, b, edges, cum, _n, _w = _panel_table(mode, sigma, lower, upper,
+                                                   n_quad)
+    Z = cum[-1]
+    if not (Z > 0 and np.isfinite(Z)):
         raise ValueError("Density integrates to zero; check parameters.")
-    F /= total
-    F = np.maximum.accumulate(F)          # guard against fp non-monotonicity
+
+    # Union of two point sets, ~2 * n_grid points in all:
+    #  - n_grid uniform points over the support (as before) carry the body of
+    #    the distribution, where ppf inversion error is set by spacing;
+    #  - n_grid points shared equally among the graded panels resolve the
+    #    density wherever it changes on scales the uniform grid cannot see
+    #    (mode near a bound). Either set alone fails one of those regimes.
+    per = max(2, int(np.ceil(n_grid / (len(edges) - 1))))
+    refine = [np.linspace(lo, hi, per + 1)
+              for lo, hi in zip(edges[:-1], edges[1:])]
+    xs = np.unique(np.concatenate([np.linspace(a, b, n_grid)] + refine))
+    F = _gl_cdf(xs, mode, sigma, lower, upper, n_quad) / Z
+    F = np.maximum.accumulate(np.clip(F, 0.0, 1.0))   # guard fp wiggle
     F[0], F[-1] = 0.0, 1.0
 
     cdf_spline = PchipInterpolator(xs, F, extrapolate=False)
@@ -452,7 +548,6 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
     return cdf_spline, ppf_spline, float(a), float(b)
 
 
-
 # ===========================================================================
 # PRECISION DIAL -- the single speed <-> precision control.
 #
@@ -466,7 +561,8 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
 # SINGLE SOURCE OF TRUTH -- to retune or add a position, edit here and
 # nowhere else. Everything downstream reads n_quad / n_grid / ppf off it.
 #
-#   n_quad : Gauss-Legendre order used by cdf (higher -> more accurate cdf)
+#   n_quad : Gauss-Legendre order per graded panel, for cdf and moments
+#            (since Phase 2, all positions reach ~1e-13; higher = slower)
 #   n_grid : points in the cached grid backing ppf/rvs (higher -> finer
 #            quantile inversion)
 #   ppf    : 'grid'  -> invert the cached spline (fast, same error as n_grid)
@@ -474,8 +570,9 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
 #                       but one solve per quantile, so much slower)
 #
 # NOT on the dial, on purpose (keeps the knob honest -- one thing, not five):
-#   - cdf composite panels are fixed at 4. Benchmarking showed the count is
-#     irrelevant once integration is confined to the effective support.
+#   - cdf panel edges are not a setting: they are graded geometrically toward
+#     the mode and both bounds (see _graded_edges), which is what keeps the
+#     cdf accurate when the mode sits near a bound.
 #   - rvs ALWAYS uses the grid, at every position including 'exact': grid
 #     inversion error is far below Monte-Carlo sampling noise, and a root-find
 #     per sample would be needlessly slow. The dial sets cdf/ppf accuracy; it
@@ -511,25 +608,28 @@ class bounded_lognorm2_gen(rv_continuous):
     machine precision.
 
     Measured tradeoffs (worst case over the test suite; timings for 1000
-    points at mode=5, sigma=10, bounds=(-5, 20); your machine will differ):
+    points at mode=5, sigma=10, bounds=(-5, 20); your machine will differ).
+    Since the Phase 2 graded panels, cdf accuracy is at the reference
+    quadrature's own floor (~1e-13) at EVERY position; the dial now mainly
+    trades cdf speed and ppf accuracy.
 
       fast
-        - cdf accuracy  ~5e-8
-        - ppf accuracy  ~6e-6
-        - cdf speed     ~2 ms / 1000 pts
+        - cdf accuracy  ~1e-13
+        - ppf accuracy  ~2e-6
+        - cdf speed     ~0.4 ms / 1000 pts
       balanced  (default)
-        - cdf accuracy  ~8e-12
-        - ppf accuracy  ~4e-7
-        - cdf speed     ~6 ms / 1000 pts
+        - cdf accuracy  ~1e-13
+        - ppf accuracy  ~1e-7
+        - cdf speed     ~0.9 ms / 1000 pts
       precise
-        - cdf accuracy  ~4e-13
-        - ppf accuracy  ~2e-8
-        - cdf speed     ~10 ms / 1000 pts
+        - cdf accuracy  ~1e-13
+        - ppf accuracy  ~4e-9 (grid built once per parameter set: ~80 ms)
+        - cdf speed     ~1.3 ms / 1000 pts
       exact
         - cdf accuracy  ~1e-13
         - ppf accuracy  ~1e-13 (brentq root-find, not the grid)
-        - cdf speed     ~16 ms / 1000 pts
-        - ppf speed     ~1 ms PER QUANTILE -- i.e. ~1000x slower than the
+        - cdf speed     ~1.9 ms / 1000 pts
+        - ppf speed     ~0.3 ms PER QUANTILE -- i.e. ~300x slower than the
           other positions. Use 'exact' for one-off high-accuracy quantiles,
           not for inverting thousands at once.
 
@@ -558,8 +658,9 @@ class bounded_lognorm2_gen(rv_continuous):
         shapes : string
             shape parameters, separated by commas
         n : int
-            grid resolution for the moment calculations in stats()/entropy();
-            retained from the original for backward compatibility
+            formerly the grid resolution for stats()/entropy(); retained for
+            backward compatibility but no longer used -- moments are now
+            integrated with the cdf's quadrature rule (Phase 2)
         precision : {'fast', 'balanced', 'precise', 'exact'}
             Position on the speed<->precision dial (left to right). Default
             'balanced'. See PRECISION_DIAL / _PRECISION_SETTINGS above and the
@@ -584,16 +685,28 @@ class bounded_lognorm2_gen(rv_continuous):
         self._ppf_method = cfg['ppf']
         return None
 
-    def _argcheck(self, *args):
+    def _argcheck(self, mode, sigma, lower=None, upper=None):
         """
-        Overrides default _argcheck to allow negative parameters.
+        Overrides the default _argcheck (which demands positive shapes) so
+        that negative locations are allowed, while still encoding the
+        distribution's real constraints: finite mode, finite sigma > 0, and
+        lower < mode < upper for each bound that is given (None = unbounded
+        side, see _argcheck_final). Elementwise for array arguments.
         """
-        cond = 1
-        for arg in args:
-            if arg is None:
-                arg = 0
-            cond = np.logical_and(cond, np.isfinite(arg))
+        mode = np.asarray(mode, dtype=float)
+        sigma = np.asarray(sigma, dtype=float)
+        cond = np.isfinite(mode) & np.isfinite(sigma) & (sigma > 0)
+        if lower is not None:
+            lower = np.asarray(lower, dtype=float)
+            cond = cond & np.isfinite(lower) & (lower < mode)
+        if upper is not None:
+            upper = np.asarray(upper, dtype=float)
+            cond = cond & np.isfinite(upper) & (mode < upper)
         return cond
+
+    # Below this ratio of sigma to the coordinate scale, float64 resolution of
+    # (x - lower) alone limits cdf accuracy to worse than ~1e-8.
+    _RESOLUTION_WARN = 1e-8
 
     def _argcheck_final(self, x, mode, sigma, lower, upper,
                         ignore_checks=False):
@@ -603,6 +716,11 @@ class bounded_lognorm2_gen(rv_continuous):
         Unlike the original, this returns mode/sigma/lower/upper as plain
         Python floats. That is required for the lru_cache keys below --
         ndarrays are unhashable and would raise on lookup.
+
+        A bound of None means "unbounded on that side" and is replaced by
+        mode -/+ 1000 sigma, where BL2 is indistinguishable from the normal
+        side. Infinite bounds are rejected rather than silently returning NaN;
+        pass None instead.
         """
         normal_approx_factor = 1e+3
         if lower is None:
@@ -619,10 +737,24 @@ class bounded_lognorm2_gen(rv_continuous):
         lower = _scalar(lower)
         upper = _scalar(upper)
 
+        if not all(np.isfinite([mode, sigma, lower, upper])):
+            raise ValueError(
+                "mode, sigma, lower and upper must be finite; use None for "
+                "an unbounded side")
+
         if not ignore_checks:
             if not ((lower < mode < upper) and (sigma > 0)):
                 raise ValueError(
                     "Requires (lower < mode < upper) and (sigma > 0)")
+            scale = max(abs(lower), abs(upper))
+            if scale > 0 and sigma < self._RESOLUTION_WARN * scale:
+                warnings.warn(
+                    "sigma is %.1e of the coordinate scale (max |bound| = "
+                    "%.3g); float64 resolution of x - lower limits cdf/ppf "
+                    "accuracy to roughly %.0e. Shift the problem nearer the "
+                    "origin if you need more."
+                    % (sigma / scale, scale, 2.2e-16 * scale / sigma),
+                    RuntimeWarning, stacklevel=3)
 
         x = np.atleast_1d(np.asarray(x, dtype=float))
         return x, mode, sigma, lower, upper
@@ -679,7 +811,8 @@ class bounded_lognorm2_gen(rv_continuous):
         """
         Cumulative distribution function (cdf).
 
-        Uses a single vectorized Gauss-Legendre rule over all x at once.
+        Whole panels come from the cached graded-panel table; each x adds one
+        vectorized Gauss-Legendre rule over its partial panel.
         """
         x, mode, sigma, lower, upper = self._argcheck_final(
             x, mode, sigma, lower, upper, ignore_checks=ignore_checks)
@@ -691,7 +824,7 @@ class bounded_lognorm2_gen(rv_continuous):
         # rule across the full (possibly vastly wider) support is what makes
         # sharply-peaked cases inaccurate.
         xc = np.clip(np.asarray(x, dtype=float), a, b)
-        y = _gl_integrate(a, xc, args, self.n_quad)
+        y = _gl_cdf(xc, mode, sigma, lower, upper, self.n_quad)
         y = np.where(np.asarray(x, dtype=float) <= a, 0.0, y)
         y = np.where(np.asarray(x, dtype=float) >= b, Z, y)
         if normed:
@@ -730,8 +863,8 @@ class bounded_lognorm2_gen(rv_continuous):
             args, a, b, Z = _prep(mode, sigma, lower, upper, self.n_quad)
 
             def _f(x, target):
-                return float(_gl_integrate(a, [x], args, self.n_quad)[0]
-                             / Z - target)
+                return float(_gl_cdf([x], mode, sigma, lower, upper,
+                                     self.n_quad)[0] / Z - target)
 
             out = np.empty_like(qc)
             flat_in = qc.ravel()
@@ -742,8 +875,12 @@ class bounded_lognorm2_gen(rv_continuous):
                 elif qi >= 1.0:
                     flat_out[i] = upper
                 else:
+                    # xtol scales with sigma so a very narrow peak is still
+                    # resolved; rtol is brentq's floor (4 * machine eps).
                     flat_out[i] = brentq(_f, a, b, args=(qi,),
-                                         xtol=1e-13, rtol=1e-14, maxiter=200)
+                                         xtol=1e-13 * min(1.0, sigma),
+                                         rtol=4 * np.finfo(float).eps,
+                                         maxiter=200)
             return out
 
         _, ppf_spline, a, b = _cdf_grid(mode, sigma, lower, upper,
@@ -783,26 +920,19 @@ class bounded_lognorm2_gen(rv_continuous):
 
     def _stats(self, mode, sigma, lower, upper, moments='mv'):
         """
-        Calculates population mean, variance, skew and kurtosis numerically.
-        Retains the original quadrature-free (grid sum) approach.
+        Calculates population mean, variance, skewness and excess kurtosis.
+
+        Phase 2: these are now integrated with the same graded Gauss-Legendre
+        rule as the cdf (see _gl_moments), replacing the original grid sum.
+        The grid sum weighted points by (upper - lower)/n instead of /(n - 1)
+        and never renormalized, which biased the mean toward zero (so it was
+        not shift-equivariant); it applied the *sample* skewness correction
+        sqrt(n(n-1))/(n-2) to a population moment; and its fixed 1001-point
+        grid aliased narrow peaks -- e.g. var(100, 1) came out 2.68, not 1.
         """
         _, mode, sigma, lower, upper = self._argcheck_final(
             0, mode, sigma, lower, upper)
-
-        n = self.n
-        xs = np.linspace(lower, upper, num=n)
-        ys = self.pdf(xs, mode, sigma, lower, upper)
-        ps = ys * (upper - lower) / n
-
-        mu = np.sum(xs * ps)
-        mu2 = np.sum((xs - mu) ** 2 * ps)
-        s = np.sqrt(mu2)
-
-        g1 = np.sum(((xs - mu) / s) ** 3 * ps)
-        g1 *= np.sqrt(n * (n - 1)) / (n - 2)
-
-        g2 = np.sum(((xs - mu) / s) ** 4 * ps) - 3
-        return mu, mu2, g1, g2
+        return _gl_moments(mode, sigma, lower, upper, self.n_quad)
 
     def stats(self, mode, sigma, lower=None, upper=None, moments='mv'):
         """
@@ -918,9 +1048,15 @@ class bounded_lognorm2_gen(rv_continuous):
 
         def curve_to_be_fit(x, *args):
             shapes[~fmask] = args
-            if fit_cdf:
-                return self.cdf(x, *shapes, ignore_checks=True)
-            return self.pdf(x, *shapes, ignore_checks=True)
+            try:
+                if fit_cdf:
+                    return self.cdf(x, *shapes, ignore_checks=True)
+                return self.pdf(x, *shapes, ignore_checks=True)
+            except ValueError:
+                # Invalid trial parameters (e.g. mode outside the bounds,
+                # sigma <= 0) now raise instead of returning NaN; steer the
+                # optimizer away with a large, finite residual.
+                return np.full(np.shape(x), 1e6)
 
         with np.errstate(invalid='ignore', divide='ignore'):
 
