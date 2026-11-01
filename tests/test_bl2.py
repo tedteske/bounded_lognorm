@@ -1,26 +1,33 @@
 """
 Regression tests for bounded_lognorm.bl2.
 
-Run directly:   python tests/test_bl2.py   (exits non-zero on failure)
-Or under pytest: pytest tests/test_bl2.py
+Run:            pytest tests/
+Or directly:    python tests/test_bl2.py   (runs pytest on this file)
+
+Every check of the pre-pytest script is one pytest item here, parametrized
+over dial position and/or case, so a failure names the exact (level, case).
+Gold values and tolerances are unchanged from that script.
 
 Author: Ted Teske with Claude (Anthropic), 2026.
 """
-import sys, os
+import functools
+import os
+import pickle
+import sys
+import warnings
+
+import numpy as np
+import pytest
+from scipy.integrate import quad
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from bounded_lognorm.bl2 import (
+from bounded_lognorm.bl2 import (                       # noqa: E402
     bounded_lognorm2_gen,
     lognorm_pdf, lognorm_params,
     _unnorm_pdf, _reference_unnorm,
 )
 
-#
-# bounded_lognorm2 -- regression tests
-#
-# Author: Ted Teske with Claude (Anthropic), 2026.
-#
-# Run this cell after the class-definition cell. Prints a PASS/FAIL table.
 #
 # WHAT THIS GUARDS
 # ----------------
@@ -30,11 +37,11 @@ from bounded_lognorm.bl2 import (
 #    advertises (DIAL_TOLERANCES below), and accuracy must not get worse as you
 #    move the dial toward 'exact'. If someone retunes _PRECISION_SETTINGS and
 #    silently breaks a position, these fail.
-# 3. Equivalence with the original implementation (Suite B, auto-skipped unless
-#    `bl2_old` is defined).
+# 3. Equivalence with the original implementation (Suite B, skipped unless a
+#    module `bl2_old` is importable).
 #
 # The suite constructs its OWN instances at known precisions -- it does NOT use
-# whatever `bl2` the notebook happens to hold, because the whole point of the
+# the package's shared `bl2` instance, because the whole point of the
 # dial is that accuracy depends on it. Testing absolute accuracy against an
 # unknown dial position is how you get a flaky suite.
 #
@@ -43,9 +50,6 @@ from bounded_lognorm.bl2 import (
 # handle. They fail SILENTLY
 # (wrong numbers, no exception) if that logic is broken. Do not remove them.
 #
-
-import numpy as np
-from scipy.integrate import quad
 
 # (mode, sigma, lower, upper)
 TEST_CASES = [
@@ -78,7 +82,26 @@ DIAL_TOLERANCES = {
 
 NORM_TOL_AT_EXACT = 1e-9   # pdf-integrates-to-1, checked at the tight end
 
-_results = []
+LEVELS = ('fast', 'balanced', 'precise', 'exact')
+
+# Suites D and E (but not A) ran with RuntimeWarning silenced; keep that.
+ignore_runtime_warnings = pytest.mark.filterwarnings("ignore::RuntimeWarning")
+
+
+def _case_id(case):
+    return ",".join(str(v) for v in case)
+
+
+def _level_case_params(cases):
+    """(level, case) pairs, ids like 'fast-5,10,-5,20'."""
+    return [pytest.param(level, case, id=f"{level}-{_case_id(case)}")
+            for level in LEVELS for case in cases]
+
+
+def _gen(level='balanced'):
+    """A fresh instance at a known dial position. The suite never uses a
+    shared `bl2`, because accuracy depends on the dial."""
+    return bounded_lognorm2_gen(precision=level)
 
 
 def _check(name, case, passed, detail=""):
@@ -109,167 +132,217 @@ def _gold_cdf(case, xs):
     return F / Z, Z
 
 
-# Precompute the gold standard once per case (expensive; dial-independent).
-_anchor = bounded_lognorm2_gen(precision='exact')
-_GOLD = {}
-for case in TEST_CASES:
-    lo_x = float(np.ravel(_anchor.from_bounds(*case).ppf(0.001))[0])
-    hi_x = float(np.ravel(_anchor.from_bounds(*case).ppf(0.999))[0])
+@functools.cache
+def _gold(case):
+    """The gold standard per case (expensive; dial-independent), computed
+    once per session on first use."""
+    anchor = bounded_lognorm2_gen(precision='exact')
+    lo_x = float(np.ravel(anchor.from_bounds(*case).ppf(0.001))[0])
+    hi_x = float(np.ravel(anchor.from_bounds(*case).ppf(0.999))[0])
     xs = np.linspace(lo_x, hi_x, 40)
     F, Z = _gold_cdf(case, xs)
-    _GOLD[case] = (xs, F, Z)
+    return xs, F, Z
 
 
 # ---------------------------------------------------------------------------
 # SUITE A -- invariants + per-position accuracy, at EVERY dial position
 # ---------------------------------------------------------------------------
-_cdf_worst_by_level = {}
+A_PARAMS = _level_case_params(TEST_CASES)
 
-for level in ('fast', 'balanced', 'precise', 'exact'):
-    dist = bounded_lognorm2_gen(precision=level)
-    cdf_tol, ppf_tol = DIAL_TOLERANCES[level]
-    worst_cdf = 0.0
 
-    for case in TEST_CASES:
-        mode, sigma, lower, upper = case
-        xs, ref_cdf, Zref = _GOLD[case]
-        rv = dist.from_bounds(*case)
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A1_pdf_matches_definition(level, case):
+    cdf_tol, _ = DIAL_TOLERANCES[level]
+    xs, _, Zref = _gold(case)
+    rv = _gen(level).from_bounds(*case)
+    ref_pdf = _reference_density(xs, *case) / Zref
+    got_pdf = np.asarray(rv.pdf(xs)).ravel()
+    scale = max(ref_pdf.max(), 1e-300)
+    # pdf accuracy tracks the cdf tolerance (both set by n_quad via Z).
+    err = np.max(np.abs(got_pdf - ref_pdf)) / scale
+    assert err < max(cdf_tol, 1e-9), f"rel err={err:.1e}"
 
-        # A1: pdf matches the definition (after normalization).
-        ref_pdf = _reference_density(xs, *case) / Zref
-        got_pdf = np.asarray(rv.pdf(xs)).ravel()
-        scale = max(ref_pdf.max(), 1e-300)
-        # pdf accuracy tracks the cdf tolerance (both set by n_quad via Z).
-        _check(f"[{level}] A1 pdf==definition", case,
-               np.max(np.abs(got_pdf - ref_pdf)) / scale < max(cdf_tol, 1e-9))
 
-        # A2: pdf integrates to 1 (checked tightly only at 'exact').
-        if level == 'exact':
-            total = quad(
-                lambda t: float(np.asarray(rv.pdf(t)).ravel()[0]),
-                lower, upper, points=[mode], limit=800,
-                epsabs=1e-13, epsrel=1e-11)[0]
-            _check(f"[{level}] A2 pdf integrates to 1", case,
-                   abs(total - 1.0) < NORM_TOL_AT_EXACT, f"{total:.12f}")
+@pytest.mark.parametrize("case", TEST_CASES,
+                         ids=lambda c: "exact-" + _case_id(c))
+def test_A2_pdf_integrates_to_one(case):
+    """Checked tightly, so only at 'exact'."""
+    mode, sigma, lower, upper = case
+    rv = _gen('exact').from_bounds(*case)
+    total = quad(
+        lambda t: float(np.asarray(rv.pdf(t)).ravel()[0]),
+        lower, upper, points=[mode], limit=800,
+        epsabs=1e-13, epsrel=1e-11)[0]
+    assert abs(total - 1.0) < NORM_TOL_AT_EXACT, f"{total:.12f}"
 
-        # A3: cdf matches adaptive quadrature within this level's tolerance.
-        got_cdf = np.asarray(rv.cdf(xs)).ravel()
-        err = np.max(np.abs(got_cdf - ref_cdf))
-        worst_cdf = max(worst_cdf, err)
-        _check(f"[{level}] A3 cdf==quad", case, err < cdf_tol, f"err={err:.1e}")
 
-        # A4: cdf boundary conditions and monotonicity (precision-independent).
-        c_lo = np.asarray(rv.cdf(lower)).ravel()[0]
-        c_hi = np.asarray(rv.cdf(upper)).ravel()[0]
-        dense = np.asarray(rv.cdf(np.linspace(lower, upper, 2000))).ravel()
-        _check(f"[{level}] A4 cdf bounds+monotone", case,
-               abs(c_lo) < 1e-12 and abs(c_hi - 1.0) < 1e-12
-               and np.all(np.diff(dense) >= -1e-12))
+@functools.cache
+def _cdf_err(level, case):
+    """Max |cdf - gold| over the gold grid. Shared by A3 and C1."""
+    xs, ref_cdf, _ = _gold(case)
+    rv = _gen(level).from_bounds(*case)
+    got_cdf = np.asarray(rv.cdf(xs)).ravel()
+    return np.max(np.abs(got_cdf - ref_cdf))
 
-        # A5: ppf inverts cdf (round-trip) within this level's tolerance.
-        q = np.linspace(0.005, 0.995, 100)
-        rt = np.asarray(rv.cdf(rv.ppf(q))).ravel()
-        _check(f"[{level}] A5 ppf round-trip", case,
-               np.max(np.abs(rt - q)) < ppf_tol,
-               f"err={np.max(np.abs(rt - q)):.1e}")
 
-        # A6: median consistency.
-        med = np.ravel(rv.median())[0]
-        med_cdf = np.asarray(rv.cdf(med)).ravel()[0]
-        _check(f"[{level}] A6 median cdf=0.5", case,
-               abs(med_cdf - 0.5) < max(ppf_tol, 1e-6))
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A3_cdf_matches_quad(level, case):
+    cdf_tol, _ = DIAL_TOLERANCES[level]
+    err = _cdf_err(level, case)
+    assert err < cdf_tol, f"err={err:.1e}"
 
-        # A7: rvs lands in support and tracks the cdf (sampling, dial-agnostic).
-        r = np.asarray(rv.rvs(size=4000, random_state=0)).ravel()
-        qx = np.quantile(r, [0.25, 0.5, 0.75])
-        theo = np.asarray(rv.cdf(qx)).ravel()
-        _check(f"[{level}] A7 rvs calibrated", case,
-               np.all(r >= lower) and np.all(r <= upper)
-               and np.max(np.abs(theo - [0.25, 0.5, 0.75])) < 0.05)
 
-        # A8: moments finite, ordered, mean inside support.
-        mu, var, sk, ku = rv.stats(moments='mvsk')
-        _check(f"[{level}] A8 moments sane", case,
-               np.all(np.isfinite([mu, var, sk, ku]))
-               and var > 0 and lower < mu < upper)
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A4_cdf_bounds_and_monotone(level, case):
+    """Precision-independent."""
+    mode, sigma, lower, upper = case
+    rv = _gen(level).from_bounds(*case)
+    c_lo = np.asarray(rv.cdf(lower)).ravel()[0]
+    c_hi = np.asarray(rv.cdf(upper)).ravel()[0]
+    dense = np.asarray(rv.cdf(np.linspace(lower, upper, 2000))).ravel()
+    assert abs(c_lo) < 1e-12 and abs(c_hi - 1.0) < 1e-12 \
+        and np.all(np.diff(dense) >= -1e-12), \
+        f"cdf(lower)={c_lo:.1e} cdf(upper)-1={c_hi - 1:.1e}"
 
-    _cdf_worst_by_level[level] = worst_cdf
+
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A5_ppf_round_trip(level, case):
+    _, ppf_tol = DIAL_TOLERANCES[level]
+    rv = _gen(level).from_bounds(*case)
+    q = np.linspace(0.005, 0.995, 100)
+    rt = np.asarray(rv.cdf(rv.ppf(q))).ravel()
+    err = np.max(np.abs(rt - q))
+    assert err < ppf_tol, f"err={err:.1e}"
+
+
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A6_median_cdf_is_half(level, case):
+    _, ppf_tol = DIAL_TOLERANCES[level]
+    rv = _gen(level).from_bounds(*case)
+    med = np.ravel(rv.median())[0]
+    med_cdf = np.asarray(rv.cdf(med)).ravel()[0]
+    assert abs(med_cdf - 0.5) < max(ppf_tol, 1e-6), f"cdf(median)={med_cdf}"
+
+
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A7_rvs_calibrated(level, case):
+    """rvs lands in support and tracks the cdf (sampling, dial-agnostic)."""
+    mode, sigma, lower, upper = case
+    rv = _gen(level).from_bounds(*case)
+    r = np.asarray(rv.rvs(size=4000, random_state=0)).ravel()
+    qx = np.quantile(r, [0.25, 0.5, 0.75])
+    theo = np.asarray(rv.cdf(qx)).ravel()
+    assert np.all(r >= lower) and np.all(r <= upper) \
+        and np.max(np.abs(theo - [0.25, 0.5, 0.75])) < 0.05, \
+        f"cdf at sample quartiles={theo}"
+
+
+@pytest.mark.parametrize("level, case", A_PARAMS)
+def test_A8_moments_sane(level, case):
+    """Moments finite, ordered, mean inside support."""
+    mode, sigma, lower, upper = case
+    rv = _gen(level).from_bounds(*case)
+    mu, var, sk, ku = rv.stats(moments='mvsk')
+    assert np.all(np.isfinite([mu, var, sk, ku])) \
+        and var > 0 and lower < mu < upper, f"mvsk={(mu, var, sk, ku)}"
 
 
 # ---------------------------------------------------------------------------
 # SUITE C -- the dial actually moves: accuracy improves left -> right
 # ---------------------------------------------------------------------------
-_order = ['fast', 'balanced', 'precise', 'exact']
 # Since the Phase 2 graded panels, every position reaches the gold
 # reference's own accuracy (~6e-14, set by quad's epsrel=1e-13), so
 # positions may tie there. Differences below this floor are noise, not a
 # regression; a position falling ABOVE its neighbour by more still fails.
 GOLD_CDF_FLOOR = 1e-13
-_mono = all(_cdf_worst_by_level[a] >= _cdf_worst_by_level[b] - GOLD_CDF_FLOOR
-            for a, b in zip(_order, _order[1:]))
-_check("C1 cdf accuracy monotone in dial", None, _mono,
-       " >= ".join(f"{_cdf_worst_by_level[l]:.1e}" for l in _order))
-
-# 'exact' ppf must be dramatically better than 'fast' ppf (the dial's headline).
-_f = bounded_lognorm2_gen(precision='fast')
-_e = bounded_lognorm2_gen(precision='exact')
-_c = (5, 10, -5, 20)
-_q = np.linspace(0.01, 0.99, 50)
-_rf, _re = _f.from_bounds(*_c), _e.from_bounds(*_c)
-_ef = np.max(np.abs(np.asarray(_rf.cdf(_rf.ppf(_q))).ravel() - _q))
-_ee = np.max(np.abs(np.asarray(_re.cdf(_re.ppf(_q))).ravel() - _q))
-_check("C2 exact ppf >> fast ppf", None, _ee < _ef / 100.0,
-       f"fast={_ef:.1e} exact={_ee:.1e}")
-
-# C3: the fused fast path (_unnorm_pdf) equals the readable definition
-# (_reference_unnorm) to ~machine precision. Dial-independent -- this is the
-# guarantee that the optimization never drifts from Eq. 3. If someone edits the
-# fused exponent and gets it subtly wrong, this fails even when every accuracy
-# test still passes within tolerance.
-#
-# Compared only where the density is non-negligible (within ~10 orders of its
-# peak). In the far tails the two are NOT bit-identical, and the fused form is
-# the better one: it sums halved log-exponents, while the readable form
-# multiplies two ~1e-200 densities and underflows to 0 first. That stability
-# edge is a feature of the fast path, not a drift from the definition.
-_pin_worst = 0.0
-for case in TEST_CASES:
-    mode, sigma, lower, upper = case
-    u, m = upper - lower, mode - lower
-    mu1, s1 = lognorm_params(m, sigma)
-    mu2, s2 = lognorm_params(u - m, sigma)
-    args = (mu1, s1, mu2, s2, lower, u)
-    xs = np.linspace(lower, upper, 2000)
-    fused = _unnorm_pdf(xs, *args)
-    defn = _reference_unnorm(xs, *args)
-    mask = defn > 1e-10 * defn.max()
-    if np.any(mask):
-        rel = np.abs(fused[mask] - defn[mask]) / defn[mask]
-        _pin_worst = max(_pin_worst, float(rel.max()))
-_check("C3 fast path == definition (Eq.3)", None, _pin_worst < 1e-12,
-       f"max rel diff={_pin_worst:.1e}")
 
 
-# ---------------------------------------------------------------------------
-# SUITE B -- equivalence with the original (needs `bl2_old`; else skipped)
-# ---------------------------------------------------------------------------
-if 'bl2_old' in dir():
-    ref = bounded_lognorm2_gen(precision='balanced')
+def test_C1_cdf_accuracy_monotone_in_dial():
+    worst = {level: max(_cdf_err(level, case) for case in TEST_CASES)
+             for level in LEVELS}
+    _order = list(LEVELS)
+    mono = all(worst[a] >= worst[b] - GOLD_CDF_FLOOR
+               for a, b in zip(_order, _order[1:]))
+    assert mono, " >= ".join(f"{worst[l]:.1e}" for l in _order)
+
+
+def test_C2_exact_ppf_beats_fast_ppf():
+    """'exact' ppf must be dramatically better than 'fast' (the headline)."""
+    _f = bounded_lognorm2_gen(precision='fast')
+    _e = bounded_lognorm2_gen(precision='exact')
+    _c = (5, 10, -5, 20)
+    _q = np.linspace(0.01, 0.99, 50)
+    _rf, _re = _f.from_bounds(*_c), _e.from_bounds(*_c)
+    _ef = np.max(np.abs(np.asarray(_rf.cdf(_rf.ppf(_q))).ravel() - _q))
+    _ee = np.max(np.abs(np.asarray(_re.cdf(_re.ppf(_q))).ravel() - _q))
+    assert _ee < _ef / 100.0, f"fast={_ef:.1e} exact={_ee:.1e}"
+
+
+def test_C3_fast_path_equals_definition():
+    """The fused fast path (_unnorm_pdf) equals the readable definition
+    (_reference_unnorm) to ~machine precision. Dial-independent -- this is
+    the guarantee that the optimization never drifts from Eq. 3. If someone
+    edits the fused exponent and gets it subtly wrong, this fails even when
+    every accuracy test still passes within tolerance.
+
+    Compared only where the density is non-negligible (within ~10 orders of
+    its peak). In the far tails the two are NOT bit-identical, and the fused
+    form is the better one: it sums halved log-exponents, while the readable
+    form multiplies two ~1e-200 densities and underflows to 0 first. That
+    stability edge is a feature of the fast path, not a drift from the
+    definition.
+    """
+    _pin_worst = 0.0
     for case in TEST_CASES:
-        xs, _, _ = _GOLD[case]
-        p_old = np.asarray(bl2_old.pdf(xs, *case)).ravel()
-        p_new = np.asarray(ref.from_bounds(*case).pdf(xs)).ravel()
-        _check("B1 pdf==original", case,
-               np.max(np.abs(p_old - p_new)) / max(p_old.max(), 1e-300) < 1e-6)
-        c_old = np.asarray(bl2_old.cdf(xs, *case)).ravel()
-        c_new = np.asarray(ref.from_bounds(*case).cdf(xs)).ravel()
-        _check("B2 cdf==original", case,
-               np.max(np.abs(c_old - c_new)) < 1e-5)
-        # B3 (stats == original) was retired in Phase 2: the original grid-sum
-        # moments were wrong (see SUITE D, D1), so equality with them is no
-        # longer the goal. D1 checks the moments against a 30-digit reference.
-else:
-    _check("B (skipped: bl2_old not defined)", None, True)
+        mode, sigma, lower, upper = case
+        u, m = upper - lower, mode - lower
+        mu1, s1 = lognorm_params(m, sigma)
+        mu2, s2 = lognorm_params(u - m, sigma)
+        args = (mu1, s1, mu2, s2, lower, u)
+        xs = np.linspace(lower, upper, 2000)
+        fused = _unnorm_pdf(xs, *args)
+        defn = _reference_unnorm(xs, *args)
+        mask = defn > 1e-10 * defn.max()
+        if np.any(mask):
+            rel = np.abs(fused[mask] - defn[mask]) / defn[mask]
+            _pin_worst = max(_pin_worst, float(rel.max()))
+    assert _pin_worst < 1e-12, f"max rel diff={_pin_worst:.1e}"
+
+
+# ---------------------------------------------------------------------------
+# SUITE B -- equivalence with the original. Skipped unless an importable
+# module `bl2_old` provides the pre-2026 instance as `bl2_old` (old API:
+# bl2_old.pdf(x, mode, sigma, lower, upper)).
+# ---------------------------------------------------------------------------
+try:
+    from bl2_old import bl2_old
+except ImportError:
+    bl2_old = None
+
+needs_bl2_old = pytest.mark.skipif(bl2_old is None,
+                                   reason="bl2_old (original) not importable")
+
+
+@needs_bl2_old
+@pytest.mark.parametrize("case", TEST_CASES, ids=_case_id)
+def test_B1_pdf_matches_original(case):
+    xs, _, _ = _gold(case)
+    p_old = np.asarray(bl2_old.pdf(xs, *case)).ravel()
+    p_new = np.asarray(_gen('balanced').from_bounds(*case).pdf(xs)).ravel()
+    assert np.max(np.abs(p_old - p_new)) / max(p_old.max(), 1e-300) < 1e-6
+
+
+@needs_bl2_old
+@pytest.mark.parametrize("case", TEST_CASES, ids=_case_id)
+def test_B2_cdf_matches_original(case):
+    xs, _, _ = _gold(case)
+    c_old = np.asarray(bl2_old.cdf(xs, *case)).ravel()
+    c_new = np.asarray(_gen('balanced').from_bounds(*case).cdf(xs)).ravel()
+    assert np.max(np.abs(c_old - c_new)) < 1e-5
+
+# B3 (stats == original) was retired in Phase 2: the original grid-sum
+# moments were wrong (see SUITE D, D1), so equality with them is no longer
+# the goal. D1 checks the moments against a 30-digit reference.
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +366,6 @@ else:
 # layers (_argcheck_final and lognorm_params' own validation); those D6
 # checks fail only when both are reverted.
 # ---------------------------------------------------------------------------
-import warnings
 
 # (mode, sigma, lower, upper): (mean, variance, skewness, excess kurtosis)
 GOLD_MOMENTS = {
@@ -350,68 +422,95 @@ GOLD_PARAMS = {
     1e12: 3.7169222224798216248,
 }
 
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore', RuntimeWarning)
-    for level in ('fast', 'balanced', 'precise', 'exact'):
-        dist = bounded_lognorm2_gen(precision=level)
-        _, ppf_tol = DIAL_TOLERANCES[level]
 
-        # D1: moments match the 30-digit reference (all dial positions).
-        for case, (m, v, s, k) in GOLD_MOMENTS.items():
-            mm, vv, ss, kk = dist.from_bounds(*case).stats(moments='mvsk')
-            em = abs(mm - m) / np.sqrt(v)
-            ev = abs(vv - v) / v
-            ok = em < 1e-10 and ev < 1e-10 and abs(ss - s) < 1e-10 \
-                and abs(kk - k) < 1e-9
-            _check(f"[{level}] D1 moments==gold", case, ok,
-                   f"mean {em:.1e}sd var {ev:.1e} skew {abs(ss-s):.1e} "
-                   f"kurt {abs(kk-k):.1e}")
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case", _level_case_params(GOLD_MOMENTS))
+def test_D1_moments_match_gold(level, case):
+    """All dial positions."""
+    m, v, s, k = GOLD_MOMENTS[case]
+    mm, vv, ss, kk = _gen(level).from_bounds(*case).stats(moments='mvsk')
+    em = abs(mm - m) / np.sqrt(v)
+    ev = abs(vv - v) / v
+    ok = em < 1e-10 and ev < 1e-10 and abs(ss - s) < 1e-10 \
+        and abs(kk - k) < 1e-9
+    assert ok, (f"mean {em:.1e}sd var {ev:.1e} skew {abs(ss-s):.1e} "
+                f"kurt {abs(kk-k):.1e}")
 
-        # D2: cdf at edge cases matches the reference quantiles.
-        # D3: ppf round-trip holds at the edge cases too.
-        for case, pairs in GOLD_EDGE_QUANTILES.items():
-            q = np.array([p[0] for p in pairs])
-            xq = np.array([p[1] for p in pairs])
-            try:
-                rv = dist.from_bounds(*case)
-                err = np.max(np.abs(np.asarray(rv.cdf(xq)).ravel() - q))
-                rt = np.max(np.abs(np.asarray(rv.cdf(rv.ppf(q))).ravel() - q))
-            except Exception:                            # crash = failure
-                err = rt = float('inf')
-            _check(f"[{level}] D2 edge cdf==gold", case,
-                   err < EDGE_CDF_TOL, f"err={err:.1e}")
-            _check(f"[{level}] D3 edge ppf round-trip", case,
-                   rt < max(ppf_tol, EDGE_CDF_TOL), f"err={rt:.1e}")
+
+@functools.cache
+def _edge_errors(level, case):
+    """(cdf error at the gold quantiles, ppf round-trip error); a crash
+    counts as failure. Shared by D2 and D3."""
+    pairs = GOLD_EDGE_QUANTILES[case]
+    q = np.array([p[0] for p in pairs])
+    xq = np.array([p[1] for p in pairs])
+    try:
+        rv = _gen(level).from_bounds(*case)
+        err = np.max(np.abs(np.asarray(rv.cdf(xq)).ravel() - q))
+        rt = np.max(np.abs(np.asarray(rv.cdf(rv.ppf(q))).ravel() - q))
+    except Exception:                                    # crash = failure
+        err = rt = float('inf')
+    return err, rt
+
+
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case",
+                         _level_case_params(GOLD_EDGE_QUANTILES))
+def test_D2_edge_cdf_matches_gold(level, case):
+    err, _ = _edge_errors(level, case)
+    assert err < EDGE_CDF_TOL, f"err={err:.1e}"
+
+
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case",
+                         _level_case_params(GOLD_EDGE_QUANTILES))
+def test_D3_edge_ppf_round_trip(level, case):
+    _, ppf_tol = DIAL_TOLERANCES[level]
+    _, rt = _edge_errors(level, case)
+    assert rt < max(ppf_tol, EDGE_CDF_TOL), f"err={rt:.1e}"
+
 
 # D4: lognorm_params -- reference values, the quartic itself across 300
 # decades of sigma/mode, and scale invariance (depends on sigma/mode only).
-_worst = max(abs(float(lognorm_params(1.0, r)[1]) - s) / s
-             for r, s in GOLD_PARAMS.items())
-_check("D4 lognorm_params==gold", None, _worst < 1e-13, f"rel={_worst:.1e}")
-_res = 0.0
-for lr in range(-150, 151, 5):
-    mu, sN = lognorm_params(1.0, 10.0 ** lr)
-    t = float(sN) ** 2                      # g = e^t ; g^4 - g^3 = r^2
-    _res = max(_res, abs(3 * t + np.log(np.expm1(t)) - 2 * lr * np.log(10))
-               / max(1.0, abs(2 * lr * np.log(10))))
-_check("D4 quartic residual, r=1e-150..1e150", None, _res < 1e-13,
-       f"rel={_res:.1e}")
-_s_ref = float(lognorm_params(1.0, 1.0)[1])
-_check("D4 scale invariance", None,
-       all(abs(float(lognorm_params(c, c)[1]) - _s_ref) < 1e-14
-           for c in (1e-300, 1e-30, 1e30, 1e300)))
+def test_D4_lognorm_params_match_gold():
+    _worst = max(abs(float(lognorm_params(1.0, r)[1]) - s) / s
+                 for r, s in GOLD_PARAMS.items())
+    assert _worst < 1e-13, f"rel={_worst:.1e}"
 
-# D5: the mean is shift-equivariant: mean(X + c) = mean(X) + c.
-_d = bounded_lognorm2_gen()
-_base = (75, 5, 70, 100)
-_m0, _v0 = _d.from_bounds(*_base).stats()
-_shift_err = max(abs(float(_d.from_bounds(_base[0] + c, 5, _base[2] + c,
-                                          _base[3] + c).mean()) - c - _m0)
-                 / np.sqrt(_v0) for c in (-1e4, 1e3, 1e4))
-_check("D5 mean shift-equivariant", None, _shift_err < 1e-10,
-       f"err={_shift_err:.1e}sd")
+
+def test_D4_quartic_residual_over_300_decades():
+    _res = 0.0
+    for lr in range(-150, 151, 5):
+        mu, sN = lognorm_params(1.0, 10.0 ** lr)
+        t = float(sN) ** 2                  # g = e^t ; g^4 - g^3 = r^2
+        _res = max(_res,
+                   abs(3 * t + np.log(np.expm1(t)) - 2 * lr * np.log(10))
+                   / max(1.0, abs(2 * lr * np.log(10))))
+    assert _res < 1e-13, f"rel={_res:.1e}"
+
+
+def test_D4_scale_invariance():
+    _s_ref = float(lognorm_params(1.0, 1.0)[1])
+    assert all(abs(float(lognorm_params(c, c)[1]) - _s_ref) < 1e-14
+               for c in (1e-300, 1e-30, 1e30, 1e300))
+
+
+def test_D5_mean_shift_equivariant():
+    """mean(X + c) = mean(X) + c."""
+    _d = bounded_lognorm2_gen()
+    _base = (75, 5, 70, 100)
+    _m0, _v0 = _d.from_bounds(*_base).stats()
+    _shift_err = max(
+        abs(float(_d.from_bounds(_base[0] + c, 5, _base[2] + c,
+                                 _base[3] + c).mean()) - c - _m0)
+        / np.sqrt(_v0) for c in (-1e4, 1e3, 1e4))
+    assert _shift_err < 1e-10, f"err={_shift_err:.1e}sd"
+
 
 # D6: argument guards.
+# Phase 3: the bounds form (from_bounds) raises on bad input, so a bad
+# parameter set fails loudly; the native (c, s, loc, scale) API follows the
+# scipy contract and returns NaN. Both halves are checked.
 def _raises(fn):
     try:
         with warnings.catch_warnings():
@@ -421,46 +520,64 @@ def _raises(fn):
         return True
     return False
 
-# Phase 3: the bounds form (from_bounds) raises on bad input, so a bad
-# parameter set fails loudly; the native (c, s, loc, scale) API follows the
-# scipy contract and returns NaN. Both halves are checked.
-_check("D6 infinite bound rejected", None,
-       _raises(lambda: _d.from_bounds(0, 1, -np.inf, np.inf))
-       and _raises(lambda: _d.from_bounds(0, 1, -np.inf, 5)))
-_check("D6 invalid params rejected by from_bounds", None,
-       all(_raises(lambda a=a: _d.from_bounds(*a))
-           for a in [(5, -1, 0, 10), (0, 1, 0, 10), (5, 0, -5, 20),
-                     (30, 1, -5, 20), (5, 1, 20, -5), (5, np.inf, -5, 20)]))
-_check("D6 native API returns NaN for invalid shapes", None,
-       all(np.isnan(_d.pdf(0.5, *a)) and np.isnan(_d.cdf(0.5, *a))
-           for a in [(1.2, 0.1), (0.0, 0.1), (1.0, 0.1), (0.5, 0.0),
-                     (0.5, -1.0)]))
-_ac = _d._argcheck
-_check("D6 _argcheck encodes the constraints", None,
-       bool(_ac(*_d.bounds_to_shapes(5, 10, -5, 20)[:2]))
-       and bool(_ac(*_d.bounds_to_shapes(5, 1, None, None)[:2]))
-       and not any(bool(_ac(*a)) for a in [(1.2, 0.1), (0.0, 0.1),
-                                           (1.0, 0.1), (0.5, 0.0),
-                                           (0.5, -1.0), (0.5, np.inf),
-                                           (np.nan, 0.1)]))
-with warnings.catch_warnings(record=True) as _w:
-    warnings.simplefilter('always')
-    _d.from_bounds(5, 1e-10, 0, 10).pdf(5)
-_check("D6 resolution warning for tiny sigma", None,
-       any(issubclass(w.category, RuntimeWarning) for w in _w))
-with warnings.catch_warnings(record=True) as _w:
-    warnings.simplefilter('always')
-    _d.from_bounds(1e9 + 5, 1, 1e9, 1e9 + 10)        # s = 0.1, but |loc| huge
-_check("D6 resolution warning for large |bounds|", None,
-       any(issubclass(w.category, RuntimeWarning) for w in _w))
 
-# D7: unbounded (None) moments -- the default-parameter case that used to
-# return var(100, 1) = 2.68 -- match the reference and are location-free.
-_m, _v, _, _ = GOLD_MOMENTS[(0, 1, -1000, 1000)]
-_ok = all(abs(float(_d.from_bounds(mo, 1).var()) - _v) / _v < 1e-10
-          and abs(float(_d.from_bounds(mo, 1).mean()) - mo) < 1e-10
-          for mo in (0, 5, 100))
-_check("D7 unbounded moments==gold", None, _ok)
+def test_D6_infinite_bound_rejected():
+    _d = bounded_lognorm2_gen()
+    assert _raises(lambda: _d.from_bounds(0, 1, -np.inf, np.inf)) \
+        and _raises(lambda: _d.from_bounds(0, 1, -np.inf, 5))
+
+
+@pytest.mark.parametrize("args", [(5, -1, 0, 10), (0, 1, 0, 10),
+                                  (5, 0, -5, 20), (30, 1, -5, 20),
+                                  (5, 1, 20, -5), (5, np.inf, -5, 20)],
+                         ids=_case_id)
+def test_D6_invalid_params_rejected_by_from_bounds(args):
+    _d = bounded_lognorm2_gen()
+    assert _raises(lambda: _d.from_bounds(*args))
+
+
+@pytest.mark.parametrize("args", [(1.2, 0.1), (0.0, 0.1), (1.0, 0.1),
+                                  (0.5, 0.0), (0.5, -1.0)], ids=_case_id)
+def test_D6_native_api_returns_nan_for_invalid_shapes(args):
+    _d = bounded_lognorm2_gen()
+    assert np.isnan(_d.pdf(0.5, *args)) and np.isnan(_d.cdf(0.5, *args))
+
+
+def test_D6_argcheck_encodes_the_constraints():
+    _d = bounded_lognorm2_gen()
+    _ac = _d._argcheck
+    assert bool(_ac(*_d.bounds_to_shapes(5, 10, -5, 20)[:2])) \
+        and bool(_ac(*_d.bounds_to_shapes(5, 1, None, None)[:2])) \
+        and not any(bool(_ac(*a)) for a in [(1.2, 0.1), (0.0, 0.1),
+                                            (1.0, 0.1), (0.5, 0.0),
+                                            (0.5, -1.0), (0.5, np.inf),
+                                            (np.nan, 0.1)])
+
+
+def test_D6_resolution_warning_for_tiny_sigma():
+    _d = bounded_lognorm2_gen()
+    with warnings.catch_warnings(record=True) as _w:
+        warnings.simplefilter('always')
+        _d.from_bounds(5, 1e-10, 0, 10).pdf(5)
+    assert any(issubclass(w.category, RuntimeWarning) for w in _w)
+
+
+def test_D6_resolution_warning_for_large_bounds():
+    _d = bounded_lognorm2_gen()
+    with warnings.catch_warnings(record=True) as _w:
+        warnings.simplefilter('always')
+        _d.from_bounds(1e9 + 5, 1, 1e9, 1e9 + 10)    # s = 0.1, |loc| huge
+    assert any(issubclass(w.category, RuntimeWarning) for w in _w)
+
+
+def test_D7_unbounded_moments_match_gold():
+    """Unbounded (None) moments -- the default-parameter case that used to
+    return var(100, 1) = 2.68 -- match the reference and are location-free."""
+    _d = bounded_lognorm2_gen()
+    _m, _v, _, _ = GOLD_MOMENTS[(0, 1, -1000, 1000)]
+    assert all(abs(float(_d.from_bounds(mo, 1).var()) - _v) / _v < 1e-10
+               and abs(float(_d.from_bounds(mo, 1).mean()) - mo) < 1e-10
+               for mo in (0, 5, 100))
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +605,6 @@ _check("D7 unbounded moments==gold", None, _ok)
 # code path: loc/scale are applied by scipy, and any conversion slip in
 # bounds_to_shapes already fails the gold suites.
 # ---------------------------------------------------------------------------
-import pickle
 
 GOLD_ENTROPY = {     # differential entropy, nats
     (5, 10, -5, 20): 2.8642876021546915913,
@@ -525,28 +641,29 @@ GOLD_SF_TAIL = {       # (x, sf(x)); 9.99 lies past the effective support
                     (8.0, 1.6759978387377380373e-12)],
 }
 
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore', RuntimeWarning)
 
-    # E1: freezing keeps the dial, and a frozen rv equals the native call.
-    for level in ('fast', 'balanced', 'precise', 'exact'):
-        dist = bounded_lognorm2_gen(precision=level)
-        fz = dist.from_bounds(5, 10, -5, 20)
-        c, s, loc, scale = dist.bounds_to_shapes(5, 10, -5, 20)
-        xs = np.linspace(-6, 21, 50)
-        q = np.linspace(0.01, 0.99, 9)
-        same = (np.array_equal(fz.pdf(xs), dist.pdf(xs, c, s, loc, scale))
-                and np.array_equal(fz.cdf(xs), dist.cdf(xs, c, s, loc, scale))
-                and np.array_equal(fz.ppf(q), dist.ppf(q, c, s, loc, scale)))
-        fz2 = pickle.loads(pickle.dumps(fz))
-        _check(f"[{level}] E1 frozen keeps precision", None,
-               fz.dist.precision == level and fz2.dist.precision == level
-               and dist(c, s).dist.precision == level and same)
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level", LEVELS)
+def test_E1_frozen_keeps_precision(level):
+    """Freezing keeps the dial, and a frozen rv equals the native call."""
+    dist = bounded_lognorm2_gen(precision=level)
+    fz = dist.from_bounds(5, 10, -5, 20)
+    c, s, loc, scale = dist.bounds_to_shapes(5, 10, -5, 20)
+    xs = np.linspace(-6, 21, 50)
+    q = np.linspace(0.01, 0.99, 9)
+    same = (np.array_equal(fz.pdf(xs), dist.pdf(xs, c, s, loc, scale))
+            and np.array_equal(fz.cdf(xs), dist.cdf(xs, c, s, loc, scale))
+            and np.array_equal(fz.ppf(q), dist.ppf(q, c, s, loc, scale)))
+    fz2 = pickle.loads(pickle.dumps(fz))
+    assert fz.dist.precision == level and fz2.dist.precision == level \
+        and dist(c, s).dist.precision == level and same
 
+
+@ignore_runtime_warnings
+def test_E2_array_valued_shapes_equal_scalar_calls():
+    """Each column equals its own scalar call, for pdf/cdf/sf/ppf/stats/
+    moment/entropy, with 2-D broadcasting."""
     _d = bounded_lognorm2_gen()
-
-    # E2: array-valued shapes -- each column equals its own scalar call, for
-    # pdf/cdf/sf/ppf/stats/moment/entropy, with 2-D broadcasting.
     cs = np.array([0.2, 0.5, 0.8, 0.5])          # repeated pair on purpose
     ss = np.array([0.05, 0.1, 0.2, 0.1])
     xg = np.linspace(0.05, 0.95, 7)[:, None]
@@ -566,10 +683,14 @@ with warnings.catch_warnings():
     r = _d.rvs(cs, ss, size=(2000, 4), random_state=0)
     ok &= r.shape == (2000, 4) and np.all(
         np.abs(np.median(r, axis=0) - _d.median(cs, ss)) < 0.01)
-    _check("E2 array-valued shapes == scalar calls", None, ok)
+    assert ok
 
-    # E3: loc/scale equivariance -- the cached tables are keyed on (c, s)
-    # only, so shifted/rescaled copies must agree to rounding.
+
+@ignore_runtime_warnings
+def test_E3_loc_scale_equivariance():
+    """The cached tables are keyed on (c, s) only, so shifted/rescaled
+    copies must agree to rounding."""
+    _d = bounded_lognorm2_gen()
     base = (75, 5, 70, 100)
     rb = _d.from_bounds(*base)
     xs = np.linspace(71, 99, 40)
@@ -582,30 +703,35 @@ with warnings.catch_warnings():
                     np.max(np.abs(k * rk.pdf(k * xs + b0) - rb.pdf(xs))
                            / rb.pdf(xs).max()),
                     abs(rk.entropy() - np.log(k) - rb.entropy()))
-    _check("E3 loc/scale equivariance", None, worst < 1e-12,
-           f"err={worst:.1e}")
+    assert worst < 1e-12, f"err={worst:.1e}"
 
-    for level in ('fast', 'balanced', 'precise', 'exact'):
-        dist = bounded_lognorm2_gen(precision=level)
 
-        # E4: entropy is BL2's own differential entropy (was a truncated-
-        # normal approximation through Phase 2).
-        for case, H in GOLD_ENTROPY.items():
-            e = abs(float(dist.from_bounds(*case).entropy()) - H)
-            _check(f"[{level}] E4 entropy==gold", case, e < 1e-10,
-                   f"err={e:.1e}")
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case", _level_case_params(GOLD_ENTROPY))
+def test_E4_entropy_matches_gold(level, case):
+    """BL2's own differential entropy (was a truncated-normal approximation
+    through Phase 2)."""
+    H = GOLD_ENTROPY[case]
+    e = abs(float(_gen(level).from_bounds(*case).entropy()) - H)
+    assert e < 1e-10, f"err={e:.1e}"
 
-        # E5: moment(n) for n = 5..8 (was None for n >= 5).
-        for case, vals in GOLD_RAW_MOMENTS.items():
-            rv = dist.from_bounds(*case)
-            e = max(abs(float(rv.moment(n)) - v) / abs(v)
-                    for n, v in zip((5, 6, 7, 8), vals))
-            _check(f"[{level}] E5 moment(5..8)==gold", case, e < 1e-10,
-                   f"rel={e:.1e}")
 
-    # E5b: moment(n) agrees with stats() for n = 1..4 and with direct
-    # quadrature (expect) for large n.
-    rv = _d.from_bounds(75, 5, 70, 100)
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case", _level_case_params(GOLD_RAW_MOMENTS))
+def test_E5_moments_5_to_8_match_gold(level, case):
+    """moment(n) for n = 5..8 (was None for n >= 5)."""
+    vals = GOLD_RAW_MOMENTS[case]
+    rv = _gen(level).from_bounds(*case)
+    e = max(abs(float(rv.moment(n)) - v) / abs(v)
+            for n, v in zip((5, 6, 7, 8), vals))
+    assert e < 1e-10, f"rel={e:.1e}"
+
+
+@ignore_runtime_warnings
+def test_E5b_moment_consistent_with_stats_and_expect():
+    """moment(n) agrees with stats() for n = 1..4 and with direct quadrature
+    (expect) for large n."""
+    rv = bounded_lognorm2_gen().from_bounds(75, 5, 70, 100)
     mu, var, sk, ku = rv.stats(moments='mvsk')
     m3c = sk * var ** 1.5
     m4c = (ku + 3) * var ** 2
@@ -617,27 +743,31 @@ with warnings.catch_warnings():
                                   + mu ** 4)) < 1e-12 * rv.moment(4))
     ok &= all(abs(rv.moment(n) / rv.expect(lambda x, n=n: x ** n) - 1)
               < 1e-9 for n in (10, 20))
-    _check("E5 moment(n) consistent with stats/expect", None, ok)
+    assert ok
 
-    # E6: sf keeps relative accuracy deep into the upper tail (1 - cdf
-    # bottoms out near 1e-16), down to the effective-support cutoff
-    # (_SUPPORT_TOL = 1e-40 of the peak density); past it sf is 0.
-    for level in ('fast', 'balanced', 'precise', 'exact'):
-        dist = bounded_lognorm2_gen(precision=level)
-        for case, pairs in GOLD_SF_TAIL.items():
-            rv = dist.from_bounds(*case)
-            ok, worst = True, 0.0
-            for x, ref in pairs:
-                got = float(rv.sf(x))
-                if ref > 1e-35:
-                    worst = max(worst, abs(got - ref) / ref)
-                else:
-                    ok &= got < 1e-40
-            _check(f"[{level}] E6 sf upper tail==gold", case,
-                   ok and worst < 1e-11, f"rel={worst:.1e}")
 
-    # E7: logpdf -- the direct log form equals log of the fused pdf where
-    # both are well defined, and stays finite where pdf underflows to 0.
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case", _level_case_params(GOLD_SF_TAIL))
+def test_E6_sf_upper_tail_matches_gold(level, case):
+    """sf keeps relative accuracy deep into the upper tail (1 - cdf bottoms
+    out near 1e-16), down to the effective-support cutoff (_SUPPORT_TOL =
+    1e-40 of the peak density); past it sf is 0."""
+    rv = _gen(level).from_bounds(*case)
+    ok, worst = True, 0.0
+    for x, ref in GOLD_SF_TAIL[case]:
+        got = float(rv.sf(x))
+        if ref > 1e-35:
+            worst = max(worst, abs(got - ref) / ref)
+        else:
+            ok &= got < 1e-40
+    assert ok and worst < 1e-11, f"rel={worst:.1e}"
+
+
+@ignore_runtime_warnings
+def test_E7_logpdf_equals_log_pdf_and_finite_in_deep_tail():
+    """The direct log form equals log of the fused pdf where both are well
+    defined, and stays finite where pdf underflows to 0."""
+    _d = bounded_lognorm2_gen()
     _lw = 0.0
     for case in TEST_CASES:
         mode, sigma, lower, upper = case
@@ -649,35 +779,47 @@ with warnings.catch_warnings():
         _lw = max(_lw, float(np.max(np.abs(lp[m] - np.log(p[m]))
                                     / np.maximum(1, np.abs(lp[m])))))
     _deep = _d.from_bounds(1, 0.062, 0, 100).logpdf([60.0, 99.0])
-    _check("E7 logpdf == log(pdf), finite in deep tail", None,
-           _lw < 1e-13 and np.all(np.isfinite(_deep))
-           and np.all(_d.from_bounds(1, 0.062, 0, 100).pdf([60.0, 99.0])
-                      == 0), f"rel={_lw:.1e}")
+    assert _lw < 1e-13 and np.all(np.isfinite(_deep)) \
+        and np.all(_d.from_bounds(1, 0.062, 0, 100).pdf([60.0, 99.0]) == 0), \
+        f"rel={_lw:.1e}"
 
-    # E8: fit -- scipy's generic MLE now works. With the bounds fixed it
-    # recovers (c, s); with all four free it reaches a likelihood at least as
-    # good as the true parameters' (that is what an MLE must do).
-    true = (75, 5, 70, 100)
-    data = _d.from_bounds(*true).rvs(size=3000, random_state=1)
-    c0, s0, loc0, sc0 = _d.bounds_to_shapes(*true)
-    try:
-        c2, s2, _, _ = _d.fit(data, floc=loc0, fscale=sc0)
-        ok2 = abs(c2 - c0) < 0.01 and abs(s2 - s0) / s0 < 0.05
-        msg2 = f"c={c2:.4f}/{c0:.4f} s={s2:.4f}/{s0:.4f}"
-    except Exception as exc:                         # crash = failure
-        ok2, msg2 = False, repr(exc)[:80]
-    try:
-        p4 = _d.fit(data)
-        ok4 = (bool(_d._argcheck(*p4[:2])) and p4[3] > 0
-               and _d.nnlf(p4, data)
-               <= _d.nnlf((c0, s0, loc0, sc0), data) + 1e-6)
-        msg4 = f"bounds={_d.to_bounds(*p4)}"
-    except Exception as exc:
-        ok4, msg4 = False, repr(exc)[:80]
-    _check("E8 fit (bounds fixed) recovers c, s", None, ok2, msg2)
-    _check("E8 fit (all free) is an MLE", None, ok4, msg4)
 
-    # E9: bridge round trip and generic rv_continuous methods.
+# E8: fit -- scipy's generic MLE now works. With the bounds fixed it
+# recovers (c, s); with all four free it reaches a likelihood at least as
+# good as the true parameters' (that is what an MLE must do).
+E8_TRUE = (75, 5, 70, 100)
+
+
+def _e8_data(_d):
+    return _d.from_bounds(*E8_TRUE).rvs(size=3000, random_state=1)
+
+
+@ignore_runtime_warnings
+def test_E8_fit_bounds_fixed_recovers_c_s():
+    _d = bounded_lognorm2_gen()
+    data = _e8_data(_d)
+    c0, s0, loc0, sc0 = _d.bounds_to_shapes(*E8_TRUE)
+    c2, s2, _, _ = _d.fit(data, floc=loc0, fscale=sc0)
+    assert abs(c2 - c0) < 0.01 and abs(s2 - s0) / s0 < 0.05, \
+        f"c={c2:.4f}/{c0:.4f} s={s2:.4f}/{s0:.4f}"
+
+
+@ignore_runtime_warnings
+def test_E8_fit_all_free_is_an_mle():
+    _d = bounded_lognorm2_gen()
+    data = _e8_data(_d)
+    c0, s0, loc0, sc0 = _d.bounds_to_shapes(*E8_TRUE)
+    p4 = _d.fit(data)
+    assert (bool(_d._argcheck(*p4[:2])) and p4[3] > 0
+            and _d.nnlf(p4, data)
+            <= _d.nnlf((c0, s0, loc0, sc0), data) + 1e-6), \
+        f"bounds={_d.to_bounds(*p4)}"
+
+
+@ignore_runtime_warnings
+def test_E9_bridge_and_generic_methods():
+    """Bridge round trip and generic rv_continuous methods."""
+    _d = bounded_lognorm2_gen()
     rv = _d.from_bounds(5, 10, -5, 20)
     rt = _d.to_bounds(*_d.bounds_to_shapes(5, 10, -5, 20))
     ok = np.allclose(rt, (5, 10, -5, 20), rtol=1e-15, atol=1e-14)
@@ -688,26 +830,8 @@ with warnings.catch_warnings():
     ok &= abs(rv.isf(0.1) - rv.ppf(0.9)) < 1e-12
     ok &= abs(np.exp(rv.logcdf(0.0)) - rv.cdf(0.0)) < 1e-15
     ok &= len(_d._shape_info()) == 2 and _d.numargs == 2
-    _check("E9 bridge + generic methods", None, ok)
+    assert ok
 
 
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-_names = sorted({n for n, _, _, _ in _results})
-_fail = [r for r in _results if not r[2]]
-
-print(f"{'test':34s} {'passed':>8s}")
-print("-" * 46)
-for n in _names:
-    rows = [r for r in _results if r[0] == n]
-    print(f"{n:34s} {sum(r[2] for r in rows):4d}/{len(rows):<4d}")
-print("-" * 46)
-print(f"{'TOTAL':34s} {sum(r[2] for r in _results):4d}/{len(_results):<4d}")
-
-if _fail:
-    print("\nFAILURES:")
-    for n, case, _, detail in _fail:
-        print(f"  {n}  case={case}  {detail}")
-    raise AssertionError(f"{len(_fail)} regression test(s) failed")
-print("\nAll regression tests passed.")
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-rs"] + sys.argv[1:]))
