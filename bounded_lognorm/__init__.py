@@ -10,6 +10,12 @@ Attribution (see ATTRIBUTION.md for the full, tiered breakdown and references):
   - Original work (2020-2024): Ted Teske -- the distributions, the mode/sigma
     reparametrization, the rv_continuous subclass and its API.
   - Optimization & dial (2026): Ted Teske with Claude (Anthropic).
+  - Phase 2 math fixes and Phase 3 scipy.stats conformance (2026): Ted Teske
+    with Claude (Anthropic).
+
+Usage: BL2 is a scipy location-scale family with shapes c (relative mode) and
+s (relative sigma) on [0, 1]; bl2.from_bounds(mode, sigma, lower, upper)
+returns a frozen distribution in the bounds form.
 """
 from .bl2 import bounded_lognorm2_gen, bl2, PRECISION_DIAL
 

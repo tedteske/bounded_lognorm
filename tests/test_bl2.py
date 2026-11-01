@@ -40,7 +40,7 @@ from bounded_lognorm.bl2 import (
 #
 # STRESS CASES: (1, 0.062, 0, 100) and (950, 1, -1000, 1000) are needle-thin
 # peaks in wide domains -- the cases the effective-support logic exists to
-# handle, and the same pair the entropy() docstring flags. They fail SILENTLY
+# handle. They fail SILENTLY
 # (wrong numbers, no exception) if that logic is broken. Do not remove them.
 #
 
@@ -113,8 +113,8 @@ def _gold_cdf(case, xs):
 _anchor = bounded_lognorm2_gen(precision='exact')
 _GOLD = {}
 for case in TEST_CASES:
-    lo_x = float(np.ravel(_anchor.ppf(0.001, *case))[0])
-    hi_x = float(np.ravel(_anchor.ppf(0.999, *case))[0])
+    lo_x = float(np.ravel(_anchor.from_bounds(*case).ppf(0.001))[0])
+    hi_x = float(np.ravel(_anchor.from_bounds(*case).ppf(0.999))[0])
     xs = np.linspace(lo_x, hi_x, 40)
     F, Z = _gold_cdf(case, xs)
     _GOLD[case] = (xs, F, Z)
@@ -133,10 +133,11 @@ for level in ('fast', 'balanced', 'precise', 'exact'):
     for case in TEST_CASES:
         mode, sigma, lower, upper = case
         xs, ref_cdf, Zref = _GOLD[case]
+        rv = dist.from_bounds(*case)
 
         # A1: pdf matches the definition (after normalization).
         ref_pdf = _reference_density(xs, *case) / Zref
-        got_pdf = np.asarray(dist.pdf(xs, *case)).ravel()
+        got_pdf = np.asarray(rv.pdf(xs)).ravel()
         scale = max(ref_pdf.max(), 1e-300)
         # pdf accuracy tracks the cdf tolerance (both set by n_quad via Z).
         _check(f"[{level}] A1 pdf==definition", case,
@@ -145,50 +146,49 @@ for level in ('fast', 'balanced', 'precise', 'exact'):
         # A2: pdf integrates to 1 (checked tightly only at 'exact').
         if level == 'exact':
             total = quad(
-                lambda t: float(np.asarray(dist.pdf(t, *case)).ravel()[0]),
+                lambda t: float(np.asarray(rv.pdf(t)).ravel()[0]),
                 lower, upper, points=[mode], limit=800,
                 epsabs=1e-13, epsrel=1e-11)[0]
             _check(f"[{level}] A2 pdf integrates to 1", case,
                    abs(total - 1.0) < NORM_TOL_AT_EXACT, f"{total:.12f}")
 
         # A3: cdf matches adaptive quadrature within this level's tolerance.
-        got_cdf = np.asarray(dist.cdf(xs, *case)).ravel()
+        got_cdf = np.asarray(rv.cdf(xs)).ravel()
         err = np.max(np.abs(got_cdf - ref_cdf))
         worst_cdf = max(worst_cdf, err)
         _check(f"[{level}] A3 cdf==quad", case, err < cdf_tol, f"err={err:.1e}")
 
         # A4: cdf boundary conditions and monotonicity (precision-independent).
-        c_lo = np.asarray(dist.cdf(lower, *case)).ravel()[0]
-        c_hi = np.asarray(dist.cdf(upper, *case)).ravel()[0]
-        dense = np.asarray(
-            dist.cdf(np.linspace(lower, upper, 2000), *case)).ravel()
+        c_lo = np.asarray(rv.cdf(lower)).ravel()[0]
+        c_hi = np.asarray(rv.cdf(upper)).ravel()[0]
+        dense = np.asarray(rv.cdf(np.linspace(lower, upper, 2000))).ravel()
         _check(f"[{level}] A4 cdf bounds+monotone", case,
                abs(c_lo) < 1e-12 and abs(c_hi - 1.0) < 1e-12
                and np.all(np.diff(dense) >= -1e-12))
 
         # A5: ppf inverts cdf (round-trip) within this level's tolerance.
         q = np.linspace(0.005, 0.995, 100)
-        rt = np.asarray(dist.cdf(dist.ppf(q, *case), *case)).ravel()
+        rt = np.asarray(rv.cdf(rv.ppf(q))).ravel()
         _check(f"[{level}] A5 ppf round-trip", case,
                np.max(np.abs(rt - q)) < ppf_tol,
                f"err={np.max(np.abs(rt - q)):.1e}")
 
         # A6: median consistency.
-        med = np.ravel(dist.median(*case))[0]
-        med_cdf = np.asarray(dist.cdf(med, *case)).ravel()[0]
+        med = np.ravel(rv.median())[0]
+        med_cdf = np.asarray(rv.cdf(med)).ravel()[0]
         _check(f"[{level}] A6 median cdf=0.5", case,
                abs(med_cdf - 0.5) < max(ppf_tol, 1e-6))
 
         # A7: rvs lands in support and tracks the cdf (sampling, dial-agnostic).
-        r = np.asarray(dist.rvs(*case, size=4000, random_state=0)).ravel()
+        r = np.asarray(rv.rvs(size=4000, random_state=0)).ravel()
         qx = np.quantile(r, [0.25, 0.5, 0.75])
-        theo = np.asarray(dist.cdf(qx, *case)).ravel()
+        theo = np.asarray(rv.cdf(qx)).ravel()
         _check(f"[{level}] A7 rvs calibrated", case,
                np.all(r >= lower) and np.all(r <= upper)
                and np.max(np.abs(theo - [0.25, 0.5, 0.75])) < 0.05)
 
         # A8: moments finite, ordered, mean inside support.
-        mu, var, sk, ku = dist.stats(*case, moments='mvsk')
+        mu, var, sk, ku = rv.stats(moments='mvsk')
         _check(f"[{level}] A8 moments sane", case,
                np.all(np.isfinite([mu, var, sk, ku]))
                and var > 0 and lower < mu < upper)
@@ -215,8 +215,9 @@ _f = bounded_lognorm2_gen(precision='fast')
 _e = bounded_lognorm2_gen(precision='exact')
 _c = (5, 10, -5, 20)
 _q = np.linspace(0.01, 0.99, 50)
-_ef = np.max(np.abs(np.asarray(_f.cdf(_f.ppf(_q, *_c), *_c)).ravel() - _q))
-_ee = np.max(np.abs(np.asarray(_e.cdf(_e.ppf(_q, *_c), *_c)).ravel() - _q))
+_rf, _re = _f.from_bounds(*_c), _e.from_bounds(*_c)
+_ef = np.max(np.abs(np.asarray(_rf.cdf(_rf.ppf(_q))).ravel() - _q))
+_ee = np.max(np.abs(np.asarray(_re.cdf(_re.ppf(_q))).ravel() - _q))
 _check("C2 exact ppf >> fast ppf", None, _ee < _ef / 100.0,
        f"fast={_ef:.1e} exact={_ee:.1e}")
 
@@ -257,11 +258,11 @@ if 'bl2_old' in dir():
     for case in TEST_CASES:
         xs, _, _ = _GOLD[case]
         p_old = np.asarray(bl2_old.pdf(xs, *case)).ravel()
-        p_new = np.asarray(ref.pdf(xs, *case)).ravel()
+        p_new = np.asarray(ref.from_bounds(*case).pdf(xs)).ravel()
         _check("B1 pdf==original", case,
                np.max(np.abs(p_old - p_new)) / max(p_old.max(), 1e-300) < 1e-6)
         c_old = np.asarray(bl2_old.cdf(xs, *case)).ravel()
-        c_new = np.asarray(ref.cdf(xs, *case)).ravel()
+        c_new = np.asarray(ref.from_bounds(*case).cdf(xs)).ravel()
         _check("B2 cdf==original", case,
                np.max(np.abs(c_old - c_new)) < 1e-5)
         # B3 (stats == original) was retired in Phase 2: the original grid-sum
@@ -357,7 +358,7 @@ with warnings.catch_warnings():
 
         # D1: moments match the 30-digit reference (all dial positions).
         for case, (m, v, s, k) in GOLD_MOMENTS.items():
-            mm, vv, ss, kk = dist.stats(*case, moments='mvsk')
+            mm, vv, ss, kk = dist.from_bounds(*case).stats(moments='mvsk')
             em = abs(mm - m) / np.sqrt(v)
             ev = abs(vv - v) / v
             ok = em < 1e-10 and ev < 1e-10 and abs(ss - s) < 1e-10 \
@@ -372,10 +373,9 @@ with warnings.catch_warnings():
             q = np.array([p[0] for p in pairs])
             xq = np.array([p[1] for p in pairs])
             try:
-                err = np.max(np.abs(np.asarray(dist.cdf(xq, *case)).ravel()
-                                    - q))
-                rt = np.max(np.abs(np.asarray(
-                    dist.cdf(dist.ppf(q, *case), *case)).ravel() - q))
+                rv = dist.from_bounds(*case)
+                err = np.max(np.abs(np.asarray(rv.cdf(xq)).ravel() - q))
+                rt = np.max(np.abs(np.asarray(rv.cdf(rv.ppf(q))).ravel() - q))
             except Exception:                            # crash = failure
                 err = rt = float('inf')
             _check(f"[{level}] D2 edge cdf==gold", case,
@@ -404,10 +404,10 @@ _check("D4 scale invariance", None,
 # D5: the mean is shift-equivariant: mean(X + c) = mean(X) + c.
 _d = bounded_lognorm2_gen()
 _base = (75, 5, 70, 100)
-_m0, _v0 = _d.stats(*_base)
-_shift_err = max(abs(float(_d.mean(_base[0] + c, 5, _base[2] + c,
-                                   _base[3] + c)) - c - _m0) / np.sqrt(_v0)
-                 for c in (-1e4, 1e3, 1e4))
+_m0, _v0 = _d.from_bounds(*_base).stats()
+_shift_err = max(abs(float(_d.from_bounds(_base[0] + c, 5, _base[2] + c,
+                                          _base[3] + c).mean()) - c - _m0)
+                 / np.sqrt(_v0) for c in (-1e4, 1e3, 1e4))
 _check("D5 mean shift-equivariant", None, _shift_err < 1e-10,
        f"err={_shift_err:.1e}sd")
 
@@ -421,30 +421,274 @@ def _raises(fn):
         return True
     return False
 
+# Phase 3: the bounds form (from_bounds) raises on bad input, so a bad
+# parameter set fails loudly; the native (c, s, loc, scale) API follows the
+# scipy contract and returns NaN. Both halves are checked.
 _check("D6 infinite bound rejected", None,
-       _raises(lambda: _d.pdf(0, 0, 1, -np.inf, np.inf))
-       and _raises(lambda: _d.cdf(0, 0, 1, -np.inf, 5)))
-_check("D6 invalid params rejected under ignore_checks", None,
-       _raises(lambda: _d.pdf(5, 5, -1, 0, 10, ignore_checks=True))
-       and _raises(lambda: _d.pdf(5, 0, 1, 0, 10, ignore_checks=True)))
+       _raises(lambda: _d.from_bounds(0, 1, -np.inf, np.inf))
+       and _raises(lambda: _d.from_bounds(0, 1, -np.inf, 5)))
+_check("D6 invalid params rejected by from_bounds", None,
+       all(_raises(lambda a=a: _d.from_bounds(*a))
+           for a in [(5, -1, 0, 10), (0, 1, 0, 10), (5, 0, -5, 20),
+                     (30, 1, -5, 20), (5, 1, 20, -5), (5, np.inf, -5, 20)]))
+_check("D6 native API returns NaN for invalid shapes", None,
+       all(np.isnan(_d.pdf(0.5, *a)) and np.isnan(_d.cdf(0.5, *a))
+           for a in [(1.2, 0.1), (0.0, 0.1), (1.0, 0.1), (0.5, 0.0),
+                     (0.5, -1.0)]))
 _ac = _d._argcheck
 _check("D6 _argcheck encodes the constraints", None,
-       bool(_ac(5, 10, -5, 20)) and bool(_ac(5, 1, None, None))
-       and not any(bool(_ac(*a)) for a in [(5, -1, -5, 20), (5, 0, -5, 20),
-                                           (30, 1, -5, 20), (5, 1, 20, -5),
-                                           (5, np.inf, -5, 20)]))
+       bool(_ac(*_d.bounds_to_shapes(5, 10, -5, 20)[:2]))
+       and bool(_ac(*_d.bounds_to_shapes(5, 1, None, None)[:2]))
+       and not any(bool(_ac(*a)) for a in [(1.2, 0.1), (0.0, 0.1),
+                                           (1.0, 0.1), (0.5, 0.0),
+                                           (0.5, -1.0), (0.5, np.inf),
+                                           (np.nan, 0.1)]))
 with warnings.catch_warnings(record=True) as _w:
     warnings.simplefilter('always')
-    _d.pdf(5, 5, 1e-10, 0, 10)
+    _d.from_bounds(5, 1e-10, 0, 10).pdf(5)
 _check("D6 resolution warning for tiny sigma", None,
+       any(issubclass(w.category, RuntimeWarning) for w in _w))
+with warnings.catch_warnings(record=True) as _w:
+    warnings.simplefilter('always')
+    _d.from_bounds(1e9 + 5, 1, 1e9, 1e9 + 10)        # s = 0.1, but |loc| huge
+_check("D6 resolution warning for large |bounds|", None,
        any(issubclass(w.category, RuntimeWarning) for w in _w))
 
 # D7: unbounded (None) moments -- the default-parameter case that used to
 # return var(100, 1) = 2.68 -- match the reference and are location-free.
 _m, _v, _, _ = GOLD_MOMENTS[(0, 1, -1000, 1000)]
-_ok = all(abs(float(_d.var(mo, 1)) - _v) / _v < 1e-10
-          and abs(float(_d.mean(mo, 1)) - mo) < 1e-10 for mo in (0, 5, 100))
+_ok = all(abs(float(_d.from_bounds(mo, 1).var()) - _v) / _v < 1e-10
+          and abs(float(_d.from_bounds(mo, 1).mean()) - mo) < 1e-10
+          for mo in (0, 5, 100))
 _check("D7 unbounded moments==gold", None, _ok)
+
+
+# ---------------------------------------------------------------------------
+# SUITE E -- Phase 3: scipy.stats conformance (see
+# docs/phase3_api_conformance.md)
+#
+# BL2 is now a standard form on [0, 1] with shapes (c, s), moved by loc/scale.
+# Gold values below come from the same kind of independent 40-digit mpmath
+# model as Suite D (bisection root of the quartic, tanh-sinh quadrature over
+# graded break points), in the original (mode, sigma, lower, upper) units.
+#
+# Mutation-checked (Nov 2026): each change below makes the listed tests fail --
+#   drop _updated_ctor_param override        -> E1
+#   _param_groups uses only the first (c, s) -> E2
+#   old truncated-normal entropy             -> E4
+#   _munp removed (n >= 5 back to scipy's
+#     generic integration) or returns None   -> E5
+#   _sf removed (scipy's 1 - cdf)            -> E6
+#   _SUPPORT_TOL back to 1e-14               -> E6
+#   _logpdf as log(_pdf)                     -> E7 (deep-tail logpdf)
+#   _fitstart removed (scipy's c = 1 start)  -> E8
+#   dropping _updated_ctor_param also fails A5, C2 and D3: every frozen
+#   distribution silently falls back to 'balanced'.
+# E3 (loc/scale equivariance) is a property check rather than a guard on one
+# code path: loc/scale are applied by scipy, and any conversion slip in
+# bounds_to_shapes already fails the gold suites.
+# ---------------------------------------------------------------------------
+import pickle
+
+GOLD_ENTROPY = {     # differential entropy, nats
+    (5, 10, -5, 20): 2.8642876021546915913,
+    (1, 3, 0, 10): 1.6004062429322540248,
+    (75, 5, 70, 100): 2.5196395034493657113,
+    (1, 0.062, 0, 100): -1.3667309095103259314,
+    (950, 1, -1000, 1000): 1.418394742587086973,
+    (0, 1, -1000, 1000): 1.418934033233526616,
+    (0.01, 1, 0, 10): 0.23580783905491950916,
+    (9, 1, 0, 10): 0.98768492198512457026,
+}
+GOLD_RAW_MOMENTS = {   # E[X^n], n = 5..8
+    (5, 10, -5, 20): (76455.785005417687142, 977928.56507218889028,
+                      13006148.273331113983, 178536792.08306151163),
+    (1, 3, 0, 10): (457.86525344185565187, 2272.0107833022334484,
+                    11924.272038127001606, 65493.133381772724067),
+    (75, 5, 70, 100): (2688596176.0642796856, 207870734517.8356692,
+                       16102008322984.547693, 1249677556253449.8406),
+    (-3, 2, -10, 0): (-1274.5167823283704734, 6632.964400403766534,
+                      -36033.849675616938205, 202981.24212979675297),
+    (950, 1, -1000, 1000): (773729989980674.54747, 735036251709071898.44,
+                            6.9827833523338170175e+20,
+                            6.6335935402823326422e+23),
+}
+GOLD_SF_TAIL = {       # (x, sf(x)); 9.99 lies past the effective support
+    (1, 3, 0, 10): [(9.0, 2.0031432868087585302e-9),
+                    (9.9, 6.2657127014251332825e-31),
+                    (9.99, 3.9763956983119566365e-66)],
+    (5, 10, -5, 20): [(19.0, 9.8417332401968253631e-7),
+                      (19.9, 4.2064824920061267135e-17),
+                      (19.99, 8.0961973504797929616e-33)],
+    (3, 1, 0, 10): [(6.0, 0.00036602174407367985336),
+                    (7.0, 5.0004863446488682695e-7),
+                    (8.0, 1.6759978387377380373e-12)],
+}
+
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', RuntimeWarning)
+
+    # E1: freezing keeps the dial, and a frozen rv equals the native call.
+    for level in ('fast', 'balanced', 'precise', 'exact'):
+        dist = bounded_lognorm2_gen(precision=level)
+        fz = dist.from_bounds(5, 10, -5, 20)
+        c, s, loc, scale = dist.bounds_to_shapes(5, 10, -5, 20)
+        xs = np.linspace(-6, 21, 50)
+        q = np.linspace(0.01, 0.99, 9)
+        same = (np.array_equal(fz.pdf(xs), dist.pdf(xs, c, s, loc, scale))
+                and np.array_equal(fz.cdf(xs), dist.cdf(xs, c, s, loc, scale))
+                and np.array_equal(fz.ppf(q), dist.ppf(q, c, s, loc, scale)))
+        fz2 = pickle.loads(pickle.dumps(fz))
+        _check(f"[{level}] E1 frozen keeps precision", None,
+               fz.dist.precision == level and fz2.dist.precision == level
+               and dist(c, s).dist.precision == level and same)
+
+    _d = bounded_lognorm2_gen()
+
+    # E2: array-valued shapes -- each column equals its own scalar call, for
+    # pdf/cdf/sf/ppf/stats/moment/entropy, with 2-D broadcasting.
+    cs = np.array([0.2, 0.5, 0.8, 0.5])          # repeated pair on purpose
+    ss = np.array([0.05, 0.1, 0.2, 0.1])
+    xg = np.linspace(0.05, 0.95, 7)[:, None]
+    ok = True
+    for meth in ('pdf', 'logpdf', 'cdf', 'sf', 'ppf'):
+        A = getattr(_d, meth)(xg, cs, ss)
+        ok &= A.shape == (7, 4) and all(
+            np.array_equal(A[:, j], getattr(_d, meth)(xg[:, 0], cs[j], ss[j]))
+            for j in range(4))
+    for meth, args in (('stats', {'moments': 'mvsk'}), ('entropy', {})):
+        A = np.array(getattr(_d, meth)(cs, ss, **args))
+        B = np.array([getattr(_d, meth)(cs[j], ss[j], **args)
+                      for j in range(4)]).T
+        ok &= np.array_equal(A, B)
+    ok &= np.array_equal(_d.moment(6, cs, ss),
+                         [_d.moment(6, cs[j], ss[j]) for j in range(4)])
+    r = _d.rvs(cs, ss, size=(2000, 4), random_state=0)
+    ok &= r.shape == (2000, 4) and np.all(
+        np.abs(np.median(r, axis=0) - _d.median(cs, ss)) < 0.01)
+    _check("E2 array-valued shapes == scalar calls", None, ok)
+
+    # E3: loc/scale equivariance -- the cached tables are keyed on (c, s)
+    # only, so shifted/rescaled copies must agree to rounding.
+    base = (75, 5, 70, 100)
+    rb = _d.from_bounds(*base)
+    xs = np.linspace(71, 99, 40)
+    worst = 0.0
+    for k, b0 in ((1.0, 0.0), (1.0, -1e3), (10.0, 0.0), (0.01, 5.0)):
+        rk = _d.from_bounds(*(k * v + (b0 if i != 1 else 0.0)
+                              for i, v in enumerate(base)))
+        worst = max(worst,
+                    np.max(np.abs(rk.cdf(k * xs + b0) - rb.cdf(xs))),
+                    np.max(np.abs(k * rk.pdf(k * xs + b0) - rb.pdf(xs))
+                           / rb.pdf(xs).max()),
+                    abs(rk.entropy() - np.log(k) - rb.entropy()))
+    _check("E3 loc/scale equivariance", None, worst < 1e-12,
+           f"err={worst:.1e}")
+
+    for level in ('fast', 'balanced', 'precise', 'exact'):
+        dist = bounded_lognorm2_gen(precision=level)
+
+        # E4: entropy is BL2's own differential entropy (was a truncated-
+        # normal approximation through Phase 2).
+        for case, H in GOLD_ENTROPY.items():
+            e = abs(float(dist.from_bounds(*case).entropy()) - H)
+            _check(f"[{level}] E4 entropy==gold", case, e < 1e-10,
+                   f"err={e:.1e}")
+
+        # E5: moment(n) for n = 5..8 (was None for n >= 5).
+        for case, vals in GOLD_RAW_MOMENTS.items():
+            rv = dist.from_bounds(*case)
+            e = max(abs(float(rv.moment(n)) - v) / abs(v)
+                    for n, v in zip((5, 6, 7, 8), vals))
+            _check(f"[{level}] E5 moment(5..8)==gold", case, e < 1e-10,
+                   f"rel={e:.1e}")
+
+    # E5b: moment(n) agrees with stats() for n = 1..4 and with direct
+    # quadrature (expect) for large n.
+    rv = _d.from_bounds(75, 5, 70, 100)
+    mu, var, sk, ku = rv.stats(moments='mvsk')
+    m3c = sk * var ** 1.5
+    m4c = (ku + 3) * var ** 2
+    ok = (abs(rv.moment(1) - mu) < 1e-12 * abs(mu)
+          and abs(rv.moment(2) - (var + mu ** 2)) < 1e-12 * rv.moment(2)
+          and abs(rv.moment(3) - (m3c + 3 * mu * var + mu ** 3))
+          < 1e-12 * rv.moment(3)
+          and abs(rv.moment(4) - (m4c + 4 * mu * m3c + 6 * mu ** 2 * var
+                                  + mu ** 4)) < 1e-12 * rv.moment(4))
+    ok &= all(abs(rv.moment(n) / rv.expect(lambda x, n=n: x ** n) - 1)
+              < 1e-9 for n in (10, 20))
+    _check("E5 moment(n) consistent with stats/expect", None, ok)
+
+    # E6: sf keeps relative accuracy deep into the upper tail (1 - cdf
+    # bottoms out near 1e-16), down to the effective-support cutoff
+    # (_SUPPORT_TOL = 1e-40 of the peak density); past it sf is 0.
+    for level in ('fast', 'balanced', 'precise', 'exact'):
+        dist = bounded_lognorm2_gen(precision=level)
+        for case, pairs in GOLD_SF_TAIL.items():
+            rv = dist.from_bounds(*case)
+            ok, worst = True, 0.0
+            for x, ref in pairs:
+                got = float(rv.sf(x))
+                if ref > 1e-35:
+                    worst = max(worst, abs(got - ref) / ref)
+                else:
+                    ok &= got < 1e-40
+            _check(f"[{level}] E6 sf upper tail==gold", case,
+                   ok and worst < 1e-11, f"rel={worst:.1e}")
+
+    # E7: logpdf -- the direct log form equals log of the fused pdf where
+    # both are well defined, and stays finite where pdf underflows to 0.
+    _lw = 0.0
+    for case in TEST_CASES:
+        mode, sigma, lower, upper = case
+        rv = _d.from_bounds(*case)
+        xs = np.linspace(lower, upper, 2001)[1:-1]
+        p = rv.pdf(xs)
+        lp = rv.logpdf(xs)
+        m = p > 1e-250
+        _lw = max(_lw, float(np.max(np.abs(lp[m] - np.log(p[m]))
+                                    / np.maximum(1, np.abs(lp[m])))))
+    _deep = _d.from_bounds(1, 0.062, 0, 100).logpdf([60.0, 99.0])
+    _check("E7 logpdf == log(pdf), finite in deep tail", None,
+           _lw < 1e-13 and np.all(np.isfinite(_deep))
+           and np.all(_d.from_bounds(1, 0.062, 0, 100).pdf([60.0, 99.0])
+                      == 0), f"rel={_lw:.1e}")
+
+    # E8: fit -- scipy's generic MLE now works. With the bounds fixed it
+    # recovers (c, s); with all four free it reaches a likelihood at least as
+    # good as the true parameters' (that is what an MLE must do).
+    true = (75, 5, 70, 100)
+    data = _d.from_bounds(*true).rvs(size=3000, random_state=1)
+    c0, s0, loc0, sc0 = _d.bounds_to_shapes(*true)
+    try:
+        c2, s2, _, _ = _d.fit(data, floc=loc0, fscale=sc0)
+        ok2 = abs(c2 - c0) < 0.01 and abs(s2 - s0) / s0 < 0.05
+        msg2 = f"c={c2:.4f}/{c0:.4f} s={s2:.4f}/{s0:.4f}"
+    except Exception as exc:                         # crash = failure
+        ok2, msg2 = False, repr(exc)[:80]
+    try:
+        p4 = _d.fit(data)
+        ok4 = (bool(_d._argcheck(*p4[:2])) and p4[3] > 0
+               and _d.nnlf(p4, data)
+               <= _d.nnlf((c0, s0, loc0, sc0), data) + 1e-6)
+        msg4 = f"bounds={_d.to_bounds(*p4)}"
+    except Exception as exc:
+        ok4, msg4 = False, repr(exc)[:80]
+    _check("E8 fit (bounds fixed) recovers c, s", None, ok2, msg2)
+    _check("E8 fit (all free) is an MLE", None, ok4, msg4)
+
+    # E9: bridge round trip and generic rv_continuous methods.
+    rv = _d.from_bounds(5, 10, -5, 20)
+    rt = _d.to_bounds(*_d.bounds_to_shapes(5, 10, -5, 20))
+    ok = np.allclose(rt, (5, 10, -5, 20), rtol=1e-15, atol=1e-14)
+    ok &= rv.support() == (-5.0, 20.0)
+    ok &= abs(rv.expect(lambda x: x) - rv.mean()) < 1e-9
+    lo_i, hi_i = rv.interval(0.9)
+    ok &= abs(rv.cdf(lo_i) - 0.05) < 1e-6 and abs(rv.cdf(hi_i) - 0.95) < 1e-6
+    ok &= abs(rv.isf(0.1) - rv.ppf(0.9)) < 1e-12
+    ok &= abs(np.exp(rv.logcdf(0.0)) - rv.cdf(0.0)) < 1e-15
+    ok &= len(_d._shape_info()) == 2 and _d.numargs == 2
+    _check("E9 bridge + generic methods", None, ok)
 
 
 # ---------------------------------------------------------------------------

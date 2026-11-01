@@ -1,9 +1,12 @@
 """
 bounded_lognorm2 (BL2) -- bounded lognormal distribution, geometric-mean form.
 
-A scipy.stats.rv_continuous subclass parameterized by mode, sigma, and
-lower/upper bounds. The pdf is the normalized geometric mean of a lognormal at
-the lower bound and a reflected lognormal at the upper bound (Eq. 3).
+A scipy.stats.rv_continuous subclass. The pdf is the normalized geometric
+mean of a lognormal at the lower bound and a reflected lognormal at the upper
+bound (Eq. 3). Since Phase 3 it is a standard scipy location-scale family:
+shapes c = (mode - lower)/(upper - lower) and s = sigma/(upper - lower) on
+[0, 1], with loc = lower and scale = upper - lower. bl2.from_bounds(mode,
+sigma, lower, upper) builds a frozen distribution from the bounds form.
 
 Speed vs. precision is controlled by a single dial set at construction:
     bounded_lognorm2_gen(precision='fast'|'balanced'|'precise'|'exact')
@@ -27,17 +30,30 @@ Attribution (full detail and references in ATTRIBUTION.md):
     a stable, scale-free solver for the lognorm_params quartic; mode-graded
     quadrature panels; moments by quadrature instead of a grid sum; argument
     guards. See docs/phase2_math_verification.md.
+  Phase 3 scipy conformance, 2026 -- Ted Teske with Claude (Anthropic):
+    the (c, s, loc, scale) parametrization and the from_bounds / to_bounds
+    bridge; _pdf/_cdf/_sf/_ppf/_rvs hooks with per-(c, s) grouped caching;
+    precision carried through freezing; entropy by quadrature (replacing
+    the truncated-normal adaptation); moment(n) for every n; logpdf in log
+    form; fit via scipy's MLE with a data-based start; the 1e-40 tail
+    cutoff. See docs/phase3_api_conformance.md.
   Third-party helpers retain their inline citations (Stack Overflow, CC BY-SA).
 -----------------------------------------------------------------------------
 """
 import warnings
+from collections import namedtuple
 from functools import lru_cache
 
 import numpy as np
 from scipy.interpolate import PchipInterpolator
-from scipy.optimize import brentq, curve_fit, minimize
+from scipy.optimize import brentq
 from scipy.special import erf, erfinv
 from scipy.stats import rv_continuous
+
+try:                                    # scipy >= 1.9; used by scipy.stats.fit
+    from scipy.stats._distn_infrastructure import _ShapeInfo
+except ImportError:                     # pragma: no cover
+    _ShapeInfo = None
 
 
 # ===========================================================================
@@ -366,6 +382,38 @@ def _graded_edges(a, b, mode, lower, upper, k_max=16, n_even=4):
     return e
 
 
+
+
+def _log_unnorm_pdf(x, mu1, s1, mu2, s2, lower, u):
+    """
+    log of _unnorm_pdf, computed directly rather than as log(exp(...)), so it
+    stays finite wherever x is inside the support -- including the far tails
+    where _unnorm_pdf itself underflows to 0. -inf outside the support. Used
+    by logpdf (and hence fit) and by the entropy. The test suite pins
+    exp(_log_unnorm_pdf) to _unnorm_pdf.
+    """
+    t = np.atleast_1d(np.asarray(x, dtype=float)) - lower
+    y = np.full_like(t, -np.inf)
+    i = (t > 0) & (t < u)
+    if np.any(i):
+        la = np.log(t[i])
+        lb = np.log(u - t[i])
+        y[i] = (-(la - mu1) ** 2 / (4 * s1 ** 2)
+                - (lb - mu2) ** 2 / (4 * s2 ** 2)
+                - 0.5 * np.log(2 * np.pi * s1 * s2) - 0.5 * (la + lb))
+    return y
+
+
+# Density cutoff, relative to the peak, that defines the effective support.
+# Phase 3 lowered it from 1e-14 to keep sf/logcdf accurate in the tails
+# (see _effective_support).
+_SUPPORT_TOL = 1e-40
+
+
+_Table = namedtuple('_Table', 'args a b edges cum rcum nodes weights Z')
+_Table.__doc__ = """Cached per-parameter-set quadrature table (see _panel_table)."""
+
+
 @lru_cache(maxsize=64)
 def _panel_table(mode, sigma, lower, upper, n_quad):
     """
@@ -380,14 +428,21 @@ def _panel_table(mode, sigma, lower, upper, n_quad):
     though it does not depend on x. That redundancy, not the choice of
     integrator, was the dominant cost.
 
-    Returns
-    -------
-    args  : tuple   -> (mu1, s1, mu2, s2, lower, u), the args for _unnorm_pdf
-    a, b  : float   -> effective support; g is negligible outside it
-    edges : ndarray -> panel edges over [a, b] (see _graded_edges)
-    cum   : ndarray -> integral of g from a to each edge; cum[-1] == Z
-    nodes, weights : ndarray -> every GL node and its weight * g(node), used
-                      for the moments (sum(weights) == Z)
+    Since Phase 3 the class always calls this in standard coordinates
+    (lower=0, upper=1, mode=c, sigma=s), so the cache is keyed on the two
+    shape parameters only: shifted or rescaled copies of one distribution
+    share a single table.
+
+    Returns a _Table with fields
+      args    : (mu1, s1, mu2, s2, lower, u), the args for _unnorm_pdf
+      a, b    : effective support; g is negligible outside it
+      edges   : panel edges over [a, b] (see _graded_edges)
+      cum     : integral of g from a to each edge; cum[-1] == Z
+      rcum    : integral of g from each edge to b (summed from the right, so
+                the upper tail keeps its relative accuracy); rcum[-1] == 0
+      nodes, weights : every GL node and its weight * g(node), used for the
+                moments and the entropy (sum(weights) == Z)
+      Z       : the normalizing constant
 
     The arrays are shared through the cache: callers must not modify them.
     """
@@ -407,17 +462,14 @@ def _panel_table(mode, sigma, lower, upper, n_quad):
     nodes = mid[:, None] + half[:, None] * xn                  # (P, n)
     weights = (half[:, None] * wn) * _unnorm_pdf(
         nodes.ravel(), *args).reshape(nodes.shape)
-    cum = np.concatenate(([0.0], np.cumsum(weights.sum(axis=1))))
-    for arr in (edges, cum, nodes, weights):
+    panel = weights.sum(axis=1)
+    cum = np.concatenate(([0.0], np.cumsum(panel)))
+    rcum = np.concatenate((np.cumsum(panel[::-1])[::-1], [0.0]))
+    nodes, weights = nodes.ravel(), weights.ravel()
+    for arr in (edges, cum, rcum, nodes, weights):
         arr.setflags(write=False)
-    return args, float(a), float(b), edges, cum, nodes.ravel(), weights.ravel()
-
-
-def _prep(mode, sigma, lower, upper, n_quad):
-    """Shape args, effective support and Z: (args, a, b, Z)."""
-    args, a, b, _e, cum, _n, _w = _panel_table(mode, sigma, lower, upper,
-                                               n_quad)
-    return args, a, b, float(cum[-1])
+    return _Table(args, float(a), float(b), edges, cum, rcum, nodes, weights,
+                  float(cum[-1]))
 
 
 def _gl_cdf(x, mode, sigma, lower, upper, n_quad):
@@ -429,18 +481,38 @@ def _gl_cdf(x, mode, sigma, lower, upper, n_quad):
     The partial piece lies inside a single graded panel, so it is at least as
     well resolved as that panel.
     """
-    args, _a, _b, edges, cum, _n, _w = _panel_table(mode, sigma, lower, upper,
-                                                    n_quad)
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
     x = np.atleast_1d(np.asarray(x, dtype=float))
-    k = np.clip(np.searchsorted(edges, x, side='right') - 1,
-                0, len(edges) - 2)
-    lo = edges[k]
+    k = np.clip(np.searchsorted(T.edges, x, side='right') - 1,
+                0, len(T.edges) - 2)
+    lo = T.edges[k]
     xn, wn = _gauss_legendre(n_quad)
     mid = (x + lo) / 2.0
     half = (x - lo) / 2.0
     pts = mid[:, None] + half[:, None] * xn
-    vals = _unnorm_pdf(pts.ravel(), *args).reshape(pts.shape)
-    return cum[k] + (vals * wn).sum(axis=1) * half
+    vals = _unnorm_pdf(pts.ravel(), *T.args).reshape(pts.shape)
+    return T.cum[k] + (vals * wn).sum(axis=1) * half
+
+
+def _gl_sf(x, mode, sigma, lower, upper, n_quad):
+    """
+    Unnormalized integral of g from each x to b (x already clipped to [a, b]).
+
+    The mirror image of _gl_cdf: whole panels above x come from the
+    right-summed table rcum, and only [x, edge_{k+1}] is integrated fresh.
+    Unlike 1 - cdf, this keeps full relative accuracy in the upper tail.
+    """
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    k = np.clip(np.searchsorted(T.edges, x, side='right') - 1,
+                0, len(T.edges) - 2)
+    hi = T.edges[k + 1]
+    xn, wn = _gauss_legendre(n_quad)
+    mid = (hi + x) / 2.0
+    half = (hi - x) / 2.0
+    pts = mid[:, None] + half[:, None] * xn
+    vals = _unnorm_pdf(pts.ravel(), *T.args).reshape(pts.shape)
+    return T.rcum[k + 1] + (vals * wn).sum(axis=1) * half
 
 
 def _gl_moments(mode, sigma, lower, upper, n_quad):
@@ -452,8 +524,8 @@ def _gl_moments(mode, sigma, lower, upper, n_quad):
     density to exactly 1), and the mean is accumulated as an offset from the
     mode, which keeps it accurate when |mode| >> sigma.
     """
-    _args, _a, _b, _e, _cum, x, w = _panel_table(mode, sigma, lower, upper,
-                                                 n_quad)
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
+    x, w = T.nodes, T.weights
     p = w / w.sum()
     mean = mode + np.sum(p * (x - mode))
     d = x - mean
@@ -463,7 +535,41 @@ def _gl_moments(mode, sigma, lower, upper, n_quad):
     return float(mean), float(var), float(skew), float(kurt)
 
 
-def _effective_support(args, mode, lower, upper, tol=1e-14):
+def _gl_raw_moment(n, mode, sigma, lower, upper, n_quad):
+    """
+    E[X**n] for any integer n >= 0, on the same nodes as _gl_moments.
+
+    The class calls this in standard coordinates, where 0 < X < 1, so every
+    term is in [0, 1] and the sum has no cancellation for any n. (scipy then
+    maps it to loc/scale by the binomial expansion.)
+    """
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
+    p = T.weights / T.weights.sum()
+    return float(np.sum(p * T.nodes ** int(n)))
+
+
+def _gl_entropy(mode, sigma, lower, upper, n_quad):
+    """
+    Differential entropy -integral(f ln f), in nats, by the same graded
+    Gauss-Legendre rule.
+
+    With f = g / Z this is  ln Z - (1/Z) * integral(g ln g).  ln g comes from
+    _log_unnorm_pdf, so it is exact where g itself has underflowed; nodes
+    where g == 0 contribute 0, the limit of g ln g. Z is the sum of the same
+    weights, so the rule is self-consistent.
+
+    Replaces the truncated-normal approximation used up to Phase 2.
+    """
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
+    w = T.weights
+    Z = w.sum()
+    lg = _log_unnorm_pdf(T.nodes, *T.args)
+    with np.errstate(invalid='ignore'):
+        glng = np.where(w > 0, w * lg, 0.0)
+    return float(np.log(Z) - glng.sum() / Z)
+
+
+def _effective_support(args, mode, lower, upper, tol=None):
     """
     Locate the sub-interval of (lower, upper) carrying essentially all the mass.
 
@@ -474,7 +580,14 @@ def _effective_support(args, mode, lower, upper, tol=1e-14):
     where a fixed-order rule spread over the full support badly under-resolves
     it. The density is unimodal with its maximum at `mode`, so the level set
     g(x) = tol * g(mode) is bracketed by bisection on each side.
+
+    tol defaults to _SUPPORT_TOL = 1e-40 (Phase 3; was 1e-14). The cutoff,
+    not the quadrature, sets how deep the tails stay accurate: at 1e-14, sf
+    and the lower-tail cdf lost relative accuracy below ~1e-12; at 1e-40 they
+    hold ~1e-12 relative down to ~1e-32. Body accuracy, the moments and the
+    timings are unchanged (a few more graded panels, built once per table).
     """
+    tol = _SUPPORT_TOL if tol is None else tol
     y0 = float(_unnorm_pdf(mode, *args)[0])
     if not np.isfinite(y0) or y0 <= 0:
         return lower, upper
@@ -504,17 +617,15 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
 
     Places n_grid uniform points over the effective support plus n_grid more
     spread across the graded panels (dense wherever the density changes
-    fastest),
-    evaluates the cdf there with the panel-table quadrature, and wraps the
-    result in monotone (PCHIP) splines. Both cdf and ppf then come from one cached pass, which is what
-    makes ppf/rvs fast.
+    fastest), evaluates the cdf there with the panel-table quadrature, and
+    wraps the result in monotone (PCHIP) splines. Both cdf and ppf then come
+    from one cached pass, which is what makes ppf/rvs fast.
 
     Returns (cdf_spline, ppf_spline, a, b) where (a, b) is the effective
     support; outside it the cdf is 0 or 1 by construction.
     """
-    _args, a, b, edges, cum, _n, _w = _panel_table(mode, sigma, lower, upper,
-                                                   n_quad)
-    Z = cum[-1]
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
+    a, b, edges, Z = T.a, T.b, T.edges, T.Z
     if not (Z > 0 and np.isfinite(Z)):
         raise ValueError("Density integrates to zero; check parameters.")
 
@@ -548,6 +659,43 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
     return cdf_spline, ppf_spline, float(a), float(b)
 
 
+# ---------------------------------------------------------------------------
+# Array-valued shapes (Phase 3).
+#
+# scipy hands _pdf/_cdf/_ppf/... arrays of shape parameters, broadcast against
+# x. The caches above need plain floats, so every method groups its inputs by
+# unique (c, s) pair and evaluates each group through the cached scalar
+# tables. The overwhelmingly common case -- one parameter set, broadcast --
+# takes a fast path with no np.unique.
+# ---------------------------------------------------------------------------
+
+def _param_groups(c, s):
+    """[(c, s, index)] for each distinct (c, s) pair in the flat arrays."""
+    c = np.ravel(np.asarray(c, dtype=float))
+    s = np.ravel(np.asarray(s, dtype=float))
+    if c.size == 0:
+        return []
+    if np.all(c == c[0]) and np.all(s == s[0]):
+        return [(float(c[0]), float(s[0]), slice(None))]
+    uniq, inv = np.unique(np.stack([c, s], axis=1), axis=0,
+                          return_inverse=True)
+    inv = np.ravel(inv)
+    return [(float(cc), float(ss), inv == k)
+            for k, (cc, ss) in enumerate(uniq)]
+
+
+def _by_params(fn, x, c, s):
+    """Apply fn(x_group, c, s) -> array per distinct (c, s); keep x's shape."""
+    x, c, s = np.broadcast_arrays(np.asarray(x, dtype=float),
+                                  np.asarray(c, dtype=float),
+                                  np.asarray(s, dtype=float))
+    xf = np.ravel(x)
+    out = np.empty(xf.shape)
+    for cc, ss, idx in _param_groups(c, s):
+        out[idx] = fn(xf[idx], cc, ss)
+    return out.reshape(x.shape)
+
+
 # ===========================================================================
 # PRECISION DIAL -- the single speed <-> precision control.
 #
@@ -577,6 +725,9 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
 #     inversion error is far below Monte-Carlo sampling noise, and a root-find
 #     per sample would be needlessly slow. The dial sets cdf/ppf accuracy; it
 #     does not change sampling quality in any measurable way.
+#
+# The dial survives freezing: scipy rebuilds the instance from
+# _updated_ctor_param(), which carries `precision`.
 # ===========================================================================
 PRECISION_DIAL = ('fast', 'balanced', 'precise', 'exact')
 
@@ -587,16 +738,48 @@ _PRECISION_SETTINGS = {
     'exact':    {'n_quad': 128, 'n_grid': 20001, 'ppf': 'solve'},
 }
 
-class bounded_lognorm2_gen(rv_continuous):
-    """
-    Subclass of scipy.stats.rv_continuous. Domain-bounded lognormal continuous
-    probability distribution, fully described by four parameters: mode, sigma,
-    lower and upper bounds.
+# Below this ratio of sigma to the coordinate scale, float64 resolution of
+# (x - lower) alone limits cdf accuracy to worse than ~1e-8.
+_RESOLUTION_WARN = 1e-8
 
-    The probability density function is the geometric mean of
+
+class bounded_lognorm2_gen(rv_continuous):
+    r"""
+    A bounded lognormal (BL2) continuous random variable.
+
+    The probability density function is the normalized geometric mean of
         1. a lognormal pdf located at the lower bound, and
-        2. a reflected lognormal pdf located at the upper bound,
-    scaled so that its integral equals 1.
+        2. a reflected lognormal pdf located at the upper bound.
+
+    Parametrization (Phase 3)
+    -------------------------
+    BL2 is an exact location-scale family, so it follows the scipy.stats
+    convention: a standard form on [0, 1] with two shape parameters, moved
+    and stretched by loc and scale.
+
+        loc   = lower
+        scale = upper - lower
+        c     = (mode - lower) / (upper - lower)     relative mode, 0 < c < 1
+        s     = sigma / (upper - lower)              relative sigma, s > 0
+
+    c is the same convention as scipy.stats.triang. sigma is the standard
+    deviation of each (untruncated) lognormal factor, not of BL2 itself.
+
+    Every rv_continuous method works: pdf, logpdf, cdf, sf, ppf, isf, rvs,
+    stats, moment(n) for any n, entropy, median, interval, expect, fit, and
+    freezing. If you think in bounds, use the bridge:
+
+        rv = bl2.from_bounds(mode=5, sigma=10, lower=-5, upper=20)  # frozen
+        rv.pdf(x); rv.cdf(x); rv.mean(); rv.entropy()
+        c, s, loc, scale = bl2.fit(data)
+        mode, sigma, lower, upper = bl2.to_bounds(c, s, loc, scale)
+
+    from_bounds accepts None for an unbounded side (see its docstring).
+
+    MIGRATION from the pre-Phase-3 API: positional calls such as
+    bl2.pdf(x, mode, sigma, lower, upper) are now read as (x, c, s, loc,
+    scale). With mode > 1 that is an invalid c, and scipy returns NaN rather
+    than raising. Wrap old parameter sets in from_bounds().
 
     The speed <-> precision dial (set once, at construction)
     -------------------------------------------------------
@@ -605,7 +788,7 @@ class bounded_lognorm2_gen(rv_continuous):
     most digits and the slowest. Pick by task: 'fast' for plotting and
     exploration, 'balanced' for ordinary work and fitting, 'precise' when you
     need ~10 good digits, 'exact' only when you need the cdf/ppf essentially to
-    machine precision.
+    machine precision. Frozen distributions keep their instance's setting.
 
     Measured tradeoffs (worst case over the test suite; timings for 1000
     points at mode=5, sigma=10, bounds=(-5, 20); your machine will differ).
@@ -634,158 +817,259 @@ class bounded_lognorm2_gen(rv_continuous):
           not for inverting thousands at once.
 
     ppf accuracy above is the cdf(ppf(q)) round-trip error. rvs uses the grid
-    at every position (see rvs docstring) and is unaffected by the dial.
+    at every position and is unaffected by the dial. Since Phase 3 these go
+    through scipy's argument handling, which adds roughly 0.1-0.6 ms per call
+    of 1000 points on top of the timings above.
 
-    Why it is fast at all (vs. the original implementation)
-    ------------------------------------------------------
-    * Shape parameters and the normalizing constant Z are computed once per
-      parameter set and cached, not recomputed at every pdf call.
-    * cdf uses a single vectorized Gauss-Legendre evaluation across all
-      x-values, and integrates only over the effective support (the sub-
-      interval actually carrying the mass), not the full domain.
-    * ppf/rvs/median read from a cached cumulative grid instead of driving a
-      fresh quadrature per point.
+    Caching
+    -------
+    Shape parameters, the normalizing constant Z and the quadrature panels
+    are computed once per (c, s) and cached; loc and scale are not part of
+    the key, so shifted or rescaled copies of one distribution share them.
+    Array-valued shapes are grouped by distinct (c, s) pair, one cached table
+    per group. Many distinct pairs in one call cost one table build each
+    (~1 ms), so e.g. 10_000 different shapes in a single call are slow.
     """
 
-    def __init__(self, name='bounded_lognorm2',
-                 shapes='mode, sigma, lower, upper', n=1001,
-                 precision='balanced'):
+    def __init__(self, precision='balanced', **kwargs):
         """
         Parameters
         ----------
-        name : string
-            name of instance
-        shapes : string
-            shape parameters, separated by commas
-        n : int
-            formerly the grid resolution for stats()/entropy(); retained for
-            backward compatibility but no longer used -- moments are now
-            integrated with the cdf's quadrature rule (Phase 2)
         precision : {'fast', 'balanced', 'precise', 'exact'}
             Position on the speed<->precision dial (left to right). Default
             'balanced'. See PRECISION_DIAL / _PRECISION_SETTINGS above and the
             measured tradeoffs in the class docstring. Set it once here; it
-            then governs cdf and ppf for the life of the instance. To mix
-            precisions in one script, make more than one instance:
+            then governs cdf and ppf for the life of the instance (and of
+            anything frozen from it). To mix precisions in one script, make
+            more than one instance:
                 bl2_fast  = bounded_lognorm2_gen(precision='fast')
                 bl2_exact = bounded_lognorm2_gen(precision='exact')
+        **kwargs
+            Passed to rv_continuous (name, seed, ...). The support (a=0, b=1)
+            and the shape names (c, s) are fixed by default.
         """
-        super().__init__()
-        self.name = name
-        self.shapes = shapes
-        self.n = n
         if precision not in _PRECISION_SETTINGS:
             raise ValueError(
                 "precision must be one of %s, got %r"
                 % (PRECISION_DIAL, precision))
+        kwargs.setdefault('a', 0.0)
+        kwargs.setdefault('b', 1.0)
+        kwargs.setdefault('name', 'bounded_lognorm2')
+        kwargs.setdefault('shapes', 'c, s')
+        super().__init__(**kwargs)
         self.precision = precision
         cfg = _PRECISION_SETTINGS[precision]
         self.n_quad = cfg['n_quad']
         self.n_grid = cfg['n_grid']
         self._ppf_method = cfg['ppf']
-        return None
 
-    def _argcheck(self, mode, sigma, lower=None, upper=None):
+    def _updated_ctor_param(self):
+        # scipy freezes by re-instantiating from these; without `precision`
+        # every frozen distribution would silently fall back to 'balanced'.
+        d = super()._updated_ctor_param()
+        d['precision'] = self.precision
+        return d
+
+    # -- scipy hooks: parameter validation and description -----------------
+
+    def _shape_info(self):
+        return [_ShapeInfo("c", False, (0, 1), (False, False)),
+                _ShapeInfo("s", False, (0, np.inf), (False, False))]
+
+    def _argcheck(self, c, s):
         """
-        Overrides the default _argcheck (which demands positive shapes) so
-        that negative locations are allowed, while still encoding the
-        distribution's real constraints: finite mode, finite sigma > 0, and
-        lower < mode < upper for each bound that is given (None = unbounded
-        side, see _argcheck_final). Elementwise for array arguments.
+        0 < c < 1 and s > 0, both finite. Elementwise.
+
+        Also warns when s < 1e-8: in standard coordinates float64 resolves
+        1 - x only to ~1e-16, so accuracy is limited to roughly 1e-16 / s.
+        (A large |loc| relative to sigma has the same effect in x - loc;
+        only from_bounds can see that, and it warns for it.)
         """
-        mode = np.asarray(mode, dtype=float)
-        sigma = np.asarray(sigma, dtype=float)
-        cond = np.isfinite(mode) & np.isfinite(sigma) & (sigma > 0)
-        if lower is not None:
-            lower = np.asarray(lower, dtype=float)
-            cond = cond & np.isfinite(lower) & (lower < mode)
-        if upper is not None:
-            upper = np.asarray(upper, dtype=float)
-            cond = cond & np.isfinite(upper) & (mode < upper)
+        c, s = np.broadcast_arrays(np.asarray(c, dtype=float),
+                                   np.asarray(s, dtype=float))
+        cond = (np.isfinite(c) & np.isfinite(s)
+                & (c > 0) & (c < 1) & (s > 0))
+        if np.any(cond & (s < _RESOLUTION_WARN)):
+            smin = float(np.min(s[cond]))
+            warnings.warn(
+                "s = %.1e: sigma is below 1e-8 of (upper - lower), so float64 "
+                "resolution limits cdf/ppf accuracy to roughly %.0e."
+                % (smin, 2.2e-16 / smin), RuntimeWarning, stacklevel=3)
         return cond
 
-    # Below this ratio of sigma to the coordinate scale, float64 resolution of
-    # (x - lower) alone limits cdf accuracy to worse than ~1e-8.
-    _RESOLUTION_WARN = 1e-8
-
-    def _argcheck_final(self, x, mode, sigma, lower, upper,
-                        ignore_checks=False):
+    def _fitstart(self, data, args=None):
         """
-        Further compatibility checks and conversions for parameters.
-
-        Unlike the original, this returns mode/sigma/lower/upper as plain
-        Python floats. That is required for the lru_cache keys below --
-        ndarrays are unhashable and would raise on lookup.
-
-        A bound of None means "unbounded on that side" and is replaced by
-        mode -/+ 1000 sigma, where BL2 is indistinguishable from the normal
-        side. Infinite bounds are rejected rather than silently returning NaN;
-        pass None instead.
+        Starting point for fit(): bounds just outside the data, mode at the
+        median, sigma at the sample standard deviation. (scipy's generic
+        start sets every shape to 1, which is an invalid c.)
         """
-        normal_approx_factor = 1e+3
-        if lower is None:
-            lower = mode - normal_approx_factor * sigma
-        if upper is None:
-            upper = mode + normal_approx_factor * sigma
+        data = np.asarray(data, dtype=float)
+        lo, hi = float(np.min(data)), float(np.max(data))
+        span = hi - lo if hi > lo else max(abs(hi), 1.0)
+        loc = lo - 0.05 * span
+        scale = 1.1 * span
+        c = float(np.clip((np.median(data) - loc) / scale, 0.05, 0.95))
+        s = float(max(np.std(data) / scale, 1e-3))
+        return c, s, loc, scale
 
-        def _scalar(v):
-            v = np.asarray(v, dtype=float)
-            return float(v.ravel()[0])
+    # -- per-parameter-set cached work --------------------------------------
 
-        mode = _scalar(mode)
-        sigma = _scalar(sigma)
-        lower = _scalar(lower)
-        upper = _scalar(upper)
+    def _table(self, c, s):
+        return _panel_table(c, s, 0.0, 1.0, self.n_quad)
 
-        if not all(np.isfinite([mode, sigma, lower, upper])):
-            raise ValueError(
-                "mode, sigma, lower and upper must be finite; use None for "
-                "an unbounded side")
+    def _grid(self, c, s):
+        return _cdf_grid(c, s, 0.0, 1.0, self.n_quad, self.n_grid)
 
-        if not ignore_checks:
-            if not ((lower < mode < upper) and (sigma > 0)):
-                raise ValueError(
-                    "Requires (lower < mode < upper) and (sigma > 0)")
-            scale = max(abs(lower), abs(upper))
-            if scale > 0 and sigma < self._RESOLUTION_WARN * scale:
-                warnings.warn(
-                    "sigma is %.1e of the coordinate scale (max |bound| = "
-                    "%.3g); float64 resolution of x - lower limits cdf/ppf "
-                    "accuracy to roughly %.0e. Shift the problem nearer the "
-                    "origin if you need more."
-                    % (sigma / scale, scale, 2.2e-16 * scale / sigma),
-                    RuntimeWarning, stacklevel=3)
+    # -- scipy hooks: the distribution itself, in standard coordinates -----
+    #
+    # scipy calls these only for x inside (0, 1) (q inside (0, 1) for _ppf)
+    # and for parameters that passed _argcheck; it handles loc/scale, the
+    # support boundaries and invalid arguments itself.
 
-        x = np.atleast_1d(np.asarray(x, dtype=float))
-        return x, mode, sigma, lower, upper
+    def _pdf(self, x, c, s):
+        def f(x, c, s):
+            T = self._table(c, s)
+            return _unnorm_pdf(x, *T.args) / T.Z
+        return _by_params(f, x, c, s)
 
-    def pdf(self, x, mode, sigma, lower=None, upper=None,
-            ignore_checks=False, normed=True):
+    def _logpdf(self, x, c, s):
+        def f(x, c, s):
+            T = self._table(c, s)
+            return _log_unnorm_pdf(x, *T.args) - np.log(T.Z)
+        return _by_params(f, x, c, s)
+
+    def _cdf(self, x, c, s):
         """
-        Probability density function (pdf).
-
-        Parameters
-        ----------
-        x : {float, list, ndarray of floats}
-            x-value(s)
-        mode : float
-            x at the point of maximum frequency
-        sigma : float
-            indicates spread of data around mode
-        lower, upper : float or None
-            bounds of the domain
+        Whole panels come from the cached graded-panel table; each x adds one
+        vectorized Gauss-Legendre rule over its partial panel. Integration is
+        confined to the effective support [a, b]: below a the mass is
+        negligible, above b the cdf has saturated.
         """
-        x, mode, sigma, lower, upper = self._argcheck_final(
-            x, mode, sigma, lower, upper, ignore_checks=ignore_checks)
+        def f(x, c, s):
+            T = self._table(c, s)
+            y = _gl_cdf(np.clip(x, T.a, T.b), c, s, 0.0, 1.0,
+                        self.n_quad) / T.Z
+            y = np.where(x <= T.a, 0.0, np.where(x >= T.b, 1.0, y))
+            return np.clip(y, 0.0, 1.0)
+        return _by_params(f, x, c, s)
 
-        args, _a, _b, Z = _prep(mode, sigma, lower, upper, self.n_quad)
-        y = _unnorm_pdf(x, *args)
-        if normed:
-            y = y / Z
-        return y
+    def _sf(self, x, c, s):
+        """1 - cdf, integrated from the right so upper tails keep their
+        relative accuracy (1 - cdf would bottom out near 1e-16)."""
+        def f(x, c, s):
+            T = self._table(c, s)
+            y = _gl_sf(np.clip(x, T.a, T.b), c, s, 0.0, 1.0,
+                       self.n_quad) / T.Z
+            y = np.where(x <= T.a, 1.0, np.where(x >= T.b, 0.0, y))
+            return np.clip(y, 0.0, 1.0)
+        return _by_params(f, x, c, s)
 
-    def density_reference(self, x, mode, sigma, lower=None, upper=None,
-                          ignore_checks=False):
+    def _ppf(self, q, c, s):
+        """
+        At dial positions 'fast'/'balanced'/'precise' this inverts the cached
+        cumulative spline (fast; error set by n_grid). At 'exact' it instead
+        root-finds cdf(x) = q with brentq, to ~machine precision, at the cost
+        of one solve per quantile.
+        """
+        if self._ppf_method == 'solve':
+            return _by_params(self._ppf_solve, q, c, s)
+        return _by_params(self._ppf_grid, q, c, s)
+
+    def _ppf_grid(self, q, c, s):
+        _, ppf_spline, a, b = self._grid(c, s)
+        y = ppf_spline(np.clip(q, 0.0, 1.0))
+        # PCHIP returns nan outside its knots; pin those to the support.
+        y = np.where(np.isnan(y), np.where(q >= 0.5, b, a), y)
+        return np.clip(y, 0.0, 1.0)
+
+    def _ppf_solve(self, q, c, s):
+        T = self._table(c, s)
+        n_quad = self.n_quad
+
+        def _f(x, target):
+            return float(_gl_cdf([x], c, s, 0.0, 1.0, n_quad)[0] / T.Z
+                         - target)
+
+        out = np.empty(np.shape(q))
+        for i, qi in enumerate(np.ravel(q)):
+            try:
+                # xtol scales with s so a very narrow peak is still resolved;
+                # rtol is brentq's floor (4 * machine eps).
+                out.flat[i] = brentq(_f, T.a, T.b, args=(qi,),
+                                     xtol=1e-14 * min(1.0, s),
+                                     rtol=4 * np.finfo(float).eps,
+                                     maxiter=200)
+            except ValueError:
+                # q within rounding of 0 or 1: no sign change on [a, b].
+                out.flat[i] = T.b if qi >= 0.5 else T.a
+        return out
+
+    def _rvs(self, c, s, size=None, random_state=None):
+        """
+        Inverse-transform sampling. Always inverts the cached grid, regardless
+        of the precision dial -- including at 'exact'. Grid inversion error is
+        far below Monte-Carlo sampling noise for any realistic sample size,
+        and a brentq solve per sample would be needlessly slow.
+        """
+        u = random_state.uniform(size=size)
+        return _by_params(self._ppf_grid, u, c, s)
+
+    # -- moments and entropy -------------------------------------------------
+
+    def _stats(self, c, s, moments='mv'):
+        """
+        Population mean, variance, skewness and excess kurtosis of the
+        standard form, integrated with the cdf's graded Gauss-Legendre rule
+        (see _gl_moments). scipy maps them to loc/scale.
+        """
+        c, s = np.broadcast_arrays(np.asarray(c, dtype=float),
+                                   np.asarray(s, dtype=float))
+        out = [np.empty(c.size) for _ in range(4)]
+        for cc, ss, idx in _param_groups(c, s):
+            vals = _gl_moments(cc, ss, 0.0, 1.0, self.n_quad)
+            for o, v in zip(out, vals):
+                o[idx] = v
+        return tuple(o.reshape(c.shape) for o in out)
+
+    def _munp(self, n, c, s):
+        """
+        n-th raw moment E[Y**n] of the standard form, for ANY integer n >= 0
+        (previously None for n >= 5). Y is in (0, 1), so the quadrature sum
+        has no cancellation; scipy's moment() maps it to loc/scale.
+        """
+        c, s = np.broadcast_arrays(np.asarray(c, dtype=float),
+                                   np.asarray(s, dtype=float))
+        out = np.empty(c.size)
+        for cc, ss, idx in _param_groups(c, s):
+            out[idx] = _gl_raw_moment(n, cc, ss, 0.0, 1.0, self.n_quad)
+        return out.reshape(c.shape)
+
+    def _entropy(self, c, s):
+        """
+        Differential entropy of the standard form, in nats, by quadrature of
+        -f ln f (see _gl_entropy). scipy adds ln(scale). This replaces the
+        truncated-normal approximation used through Phase 2, which was not
+        BL2's own entropy.
+        """
+        return _gl_entropy(float(c), float(s), 0.0, 1.0, self.n_quad)
+
+    # -- extras beyond the rv_continuous API ---------------------------------
+
+    def normalizing_constant(self, c, s):
+        """
+        Z, the integral of the unnormalized geometric-mean density. It is the
+        Bhattacharyya coefficient of the two lognormal factors, so 0 < Z <= 1,
+        and it is unchanged by loc and scale. pdf * Z gives the unnormalized
+        density in x units (what `normed=False` returned before Phase 3).
+        """
+        c, s = np.broadcast_arrays(np.asarray(c, dtype=float),
+                                   np.asarray(s, dtype=float))
+        out = np.empty(c.size)
+        for cc, ss, idx in _param_groups(c, s):
+            out[idx] = self._table(cc, ss).Z
+        return out.reshape(c.shape)[()]
+
+    def density_reference(self, x, c, s, loc=0.0, scale=1.0):
         """
         The pdf written as its definition (Eq. 3), for reading and checking --
         the normalized geometric mean of the two lognormal factors.
@@ -794,299 +1078,87 @@ class bounded_lognorm2_gen(rv_continuous):
         this returns them via the plain definition. They agree to ~machine
         precision (the test suite enforces it). Use pdf() in practice; use this
         when you want to confirm by eye what pdf() is computing, or as the
-        ground-truth density in a derivation.
+        ground-truth density in a derivation. Scalar c, s only.
         """
-        x, mode, sigma, lower, upper = self._argcheck_final(
-            x, mode, sigma, lower, upper, ignore_checks=ignore_checks)
-        args, _a, _b, Z = _prep(mode, sigma, lower, upper, self.n_quad)
-        return _reference_unnorm(x, *args) / Z
+        c, s = float(c), float(s)
+        T = self._table(c, s)
+        y = (np.asarray(x, dtype=float) - loc) / scale
+        return _reference_unnorm(y, *T.args).reshape(np.shape(y)) \
+            / T.Z / scale
 
-    def logpdf(self, x, mode, sigma, lower=None, upper=None):
-        """Log of the pdf."""
-        with np.errstate(divide='ignore'):
-            return np.log(self.pdf(x, mode, sigma, lower, upper))
-
-    def cdf(self, x, mode, sigma, lower=None, upper=None,
-            ignore_checks=False, normed=True):
+    def from_bounds(self, mode, sigma, lower=None, upper=None):
         """
-        Cumulative distribution function (cdf).
+        Frozen distribution from the bounds parametrization.
 
-        Whole panels come from the cached graded-panel table; each x adds one
-        vectorized Gauss-Legendre rule over its partial panel.
+        Parameters
+        ----------
+        mode : float
+            x at the point of maximum density
+        sigma : float
+            spread around the mode (SD of each lognormal factor), > 0
+        lower, upper : float or None
+            bounds of the support. None means unbounded on that side and is
+            replaced by mode -/+ 1000 sigma, where BL2 is indistinguishable
+            from the normal side. Infinite bounds are rejected; pass None.
+
+        Returns
+        -------
+        A frozen rv with c = (mode - lower)/(upper - lower),
+        s = sigma/(upper - lower), loc = lower, scale = upper - lower, at this
+        instance's precision.
+
+        Unlike the native API (which returns NaN for invalid parameters, as
+        scipy does), this raises ValueError, so a bad parameter set fails
+        loudly. Accepts arrays (broadcast elementwise).
         """
-        x, mode, sigma, lower, upper = self._argcheck_final(
-            x, mode, sigma, lower, upper, ignore_checks=ignore_checks)
+        c, s, loc, scale = self.bounds_to_shapes(mode, sigma, lower, upper)
+        return self(c, s, loc=loc, scale=scale)
 
-        args, a, b, Z = _prep(mode, sigma, lower, upper, self.n_quad)
-
-        # Integrate only over the effective support: below `a` the mass is
-        # negligible, above `b` the cdf has saturated. Spreading a fixed-order
-        # rule across the full (possibly vastly wider) support is what makes
-        # sharply-peaked cases inaccurate.
-        xc = np.clip(np.asarray(x, dtype=float), a, b)
-        y = _gl_cdf(xc, mode, sigma, lower, upper, self.n_quad)
-        y = np.where(np.asarray(x, dtype=float) <= a, 0.0, y)
-        y = np.where(np.asarray(x, dtype=float) >= b, Z, y)
-        if normed:
-            y = np.clip(y / Z, 0.0, 1.0)
-        return y
-
-    def logcdf(self, x, mode, sigma, lower=None, upper=None):
-        """Log of the cdf."""
-        with np.errstate(divide='ignore'):
-            return np.log(self.cdf(x, mode, sigma, lower, upper))
-
-    def sf(self, x, mode, sigma, lower=None, upper=None):
-        """Survival function, 1 - cdf."""
-        return 1.0 - self.cdf(x, mode, sigma, lower, upper)
-
-    def logsf(self, x, mode, sigma, lower=None, upper=None):
-        """Log of the survival function."""
-        with np.errstate(divide='ignore'):
-            return np.log(self.sf(x, mode, sigma, lower, upper))
-
-    def ppf(self, q, mode, sigma, lower=None, upper=None,
-            ignore_checks=False):
+    @staticmethod
+    def bounds_to_shapes(mode, sigma, lower=None, upper=None):
         """
-        Percent-point function (ppf), the inverse of the cdf.
-
-        At dial positions 'fast'/'balanced'/'precise' this inverts the cached
-        cumulative spline (fast; error set by n_grid). At 'exact' it instead
-        root-finds cdf(x) = q with brentq, to ~machine precision, at the cost
-        of one solve per quantile.
+        (mode, sigma, lower, upper) -> (c, s, loc, scale), validated.
+        None bounds as in from_bounds. Useful with fit, e.g. to fix known
+        bounds: bl2.fit(data, floc=loc, fscale=scale).
         """
-        q, mode, sigma, lower, upper = self._argcheck_final(
-            q, mode, sigma, lower, upper, ignore_checks=ignore_checks)
-        qc = np.clip(q, 0.0, 1.0)
+        normal_approx_factor = 1e+3
+        mode = np.asarray(mode, dtype=float)
+        sigma = np.asarray(sigma, dtype=float)
+        lower = (mode - normal_approx_factor * sigma if lower is None
+                 else np.asarray(lower, dtype=float))
+        upper = (mode + normal_approx_factor * sigma if upper is None
+                 else np.asarray(upper, dtype=float))
+        if not np.all(np.isfinite(mode) & np.isfinite(sigma)
+                      & np.isfinite(lower) & np.isfinite(upper)):
+            raise ValueError(
+                "mode, sigma, lower and upper must be finite; use None for "
+                "an unbounded side")
+        if not np.all((lower < mode) & (mode < upper) & (sigma > 0)):
+            raise ValueError("Requires (lower < mode < upper) and (sigma > 0)")
+        scale = upper - lower
+        c = (mode - lower) / scale
+        s = sigma / scale
+        # Large |bounds| relative to sigma limit the resolution of x - loc.
+        # (A small s on its own is reported by _argcheck instead.)
+        bound = np.maximum(np.abs(lower), np.abs(upper))
+        hit = (sigma < _RESOLUTION_WARN * bound) & ~(s < _RESOLUTION_WARN)
+        if np.any(hit):
+            r = float(np.min((sigma / bound)[hit]))
+            warnings.warn(
+                "sigma is %.1e of the coordinate scale (max |bound|); "
+                "float64 resolution of x - lower limits cdf/ppf accuracy to "
+                "roughly %.0e. Shift the problem nearer the origin if you "
+                "need more." % (r, 2.2e-16 / r), RuntimeWarning, stacklevel=3)
+        return c[()], s[()], lower[()], scale[()]
 
-        if self._ppf_method == 'solve':
-            args, a, b, Z = _prep(mode, sigma, lower, upper, self.n_quad)
-
-            def _f(x, target):
-                return float(_gl_cdf([x], mode, sigma, lower, upper,
-                                     self.n_quad)[0] / Z - target)
-
-            out = np.empty_like(qc)
-            flat_in = qc.ravel()
-            flat_out = out.ravel()
-            for i, qi in enumerate(flat_in):
-                if qi <= 0.0:
-                    flat_out[i] = lower
-                elif qi >= 1.0:
-                    flat_out[i] = upper
-                else:
-                    # xtol scales with sigma so a very narrow peak is still
-                    # resolved; rtol is brentq's floor (4 * machine eps).
-                    flat_out[i] = brentq(_f, a, b, args=(qi,),
-                                         xtol=1e-13 * min(1.0, sigma),
-                                         rtol=4 * np.finfo(float).eps,
-                                         maxiter=200)
-            return out
-
-        _, ppf_spline, a, b = _cdf_grid(mode, sigma, lower, upper,
-                                        self.n_quad, self.n_grid)
-        y = ppf_spline(qc)
-        # PCHIP returns nan at/outside the ends; pin them to the support.
-        y = np.where(qc <= 0.0, lower, y)
-        y = np.where(qc >= 1.0, upper, y)
-        y = np.where(np.isnan(y), np.clip(y, a, b), y)
-        return np.clip(y, lower, upper)
-
-    def isf(self, q, mode, sigma, lower=None, upper=None):
-        """Inverse survival function."""
-        return self.ppf(1.0 - np.asarray(q, dtype=float),
-                        mode, sigma, lower, upper)
-
-    def rvs(self, mode, sigma, lower=None, upper=None, size=1,
-            random_state=None):
-        """
-        Generates random variate(s) by inverse-transform sampling.
-
-        Always inverts the cached grid, regardless of the precision dial --
-        including at 'exact'. Grid inversion error is far below Monte-Carlo
-        sampling noise for any realistic sample size, and a brentq solve per
-        sample would be needlessly slow. (The dial governs cdf/ppf accuracy,
-        not sampling quality.)
-        """
-        q, mode, sigma, lower, upper = self._argcheck_final(
-            np.asarray([], dtype=float), mode, sigma, lower, upper)
-        rng = np.random.default_rng(random_state)
-        u = rng.uniform(size=int(size))
-        _, ppf_spline, a, b = _cdf_grid(mode, sigma, lower, upper,
-                                        self.n_quad, self.n_grid)
-        y = ppf_spline(np.clip(u, 0.0, 1.0))
-        y = np.where(np.isnan(y), np.clip(y, a, b), y)
-        return np.clip(y, lower, upper)
-
-    def _stats(self, mode, sigma, lower, upper, moments='mv'):
-        """
-        Calculates population mean, variance, skewness and excess kurtosis.
-
-        Phase 2: these are now integrated with the same graded Gauss-Legendre
-        rule as the cdf (see _gl_moments), replacing the original grid sum.
-        The grid sum weighted points by (upper - lower)/n instead of /(n - 1)
-        and never renormalized, which biased the mean toward zero (so it was
-        not shift-equivariant); it applied the *sample* skewness correction
-        sqrt(n(n-1))/(n-2) to a population moment; and its fixed 1001-point
-        grid aliased narrow peaks -- e.g. var(100, 1) came out 2.68, not 1.
-        """
-        _, mode, sigma, lower, upper = self._argcheck_final(
-            0, mode, sigma, lower, upper)
-        return _gl_moments(mode, sigma, lower, upper, self.n_quad)
-
-    def stats(self, mode, sigma, lower=None, upper=None, moments='mv'):
-        """
-        Calculates population mean('m'), variance('v'), skew('s'),
-        and/or kurtosis('k').
-        """
-        output = []
-        mu, mu2, g1, g2 = self._stats(mode, sigma, lower, upper)
-        if 'm' in moments:
-            output.append(mu)
-        if 'v' in moments:
-            output.append(mu2)
-        if 's' in moments:
-            output.append(g1)
-        if 'k' in moments:
-            output.append(g2)
-        if len(output) == 1:
-            return output[0]
-        return tuple(output)
-
-    def moment(self, n, mode, sigma, lower=None, upper=None):
-        """Calculates n-th order non-central moment of distribution."""
-        mu, mu2, g1, g2 = self._stats(mode, sigma, lower, upper)
-        mu3 = g1 * mu2 ** 1.5
-        mu4 = (g2 + 3.0) * mu2 ** 2
-
-        if n == 0:
-            return 1.0
-        elif n == 1:
-            return mu
-        elif n == 2:
-            return mu2 + mu ** 2
-        elif n == 3:
-            return mu3 + mu * (mu ** 2 + 3 * mu2)
-        elif n == 4:
-            return mu4 + mu * ((mu ** 2 + 6 * mu2) * mu + 4 * mu3)
-        else:
-            pass
-
-    def support(self, mode, sigma, lower=None, upper=None):
-        """End-points of the distribution's support."""
-        _, mode, sigma, lower, upper = self._argcheck_final(
-            0, mode, sigma, lower, upper)
-        return lower, upper
-
-    def median(self, mode, sigma, lower=None, upper=None):
-        """Median."""
-        return self.ppf(0.5, mode, sigma, lower, upper)
-
-    def mean(self, mode, sigma, lower=None, upper=None):
-        """Mean."""
-        return self.stats(mode, sigma, lower, upper, moments='m')
-
-    def var(self, mode, sigma, lower=None, upper=None):
-        """Variance."""
-        return self.stats(mode, sigma, lower, upper, moments='v')
-
-    def std(self, mode, sigma, lower=None, upper=None):
-        """Standard deviation."""
-        return np.sqrt(self.var(mode, sigma, lower, upper))
-
-    def entropy(self, mode, sigma, lower=None, upper=None):
-        """
-        Differential entropy of the random variable, in nats.
-        Adapts the formula for entropy of the truncated normal distribution.
-        """
-        _, mode, sigma, lower, upper = self._argcheck_final(
-            0, mode, sigma, lower, upper)
-
-        mu, var = self.stats(mode, sigma, lower, upper)
-        std = np.sqrt(var)
-        alpha = (lower - mu) / std
-        beta = (upper - mu) / std
-        Z = norm_cdf(beta) - norm_cdf(alpha)
-        entropy = 0.5 * np.log(2 * np.pi * np.e * var * Z ** 2)
-        entropy += (alpha * norm_pdf(alpha) - beta * norm_pdf(beta)) / (2 * Z)
-        return entropy
-
-    def nnlf(self, x, mode, sigma, lower=None, upper=None):
-        """Negative loglikelihood function."""
-        return -np.sum(self.logpdf(x, mode, sigma, lower, upper), axis=0)
-
-    def fit(self, data, MLE=True, verbose=False,
-            fmode=None, fsigma=None, flower=None, fupper=None,
-            gmode=None, gsigma=None, glower=None, gupper=None):
-        """
-        Estimates bounded_lognorm parameters from user-supplied random
-        variates. See original docstring; behaviour is unchanged.
-        """
-        data = np.asarray(data)
-        sample_size = len(data)
-        shapes = np.ones(4)
-
-        fparams = np.array([fmode, fsigma, flower, fupper])
-        fmask = (fparams != np.array(None))
-        shapes[fmask] = fparams[fmask]
-
-        gparams = np.array([gmode, gsigma, glower, gupper])
-        minmax_cushion = 0.0001
-        gdefaults = np.array([np.median(data), data.std(),
-                              data.min() * (1 - minmax_cushion),
-                              data.max() * (1 + minmax_cushion)])
-        gmask = (gparams != np.array(None))
-        gparams[~gmask] = gdefaults[~gmask]
-        gparams = np.array(gparams[~fmask], dtype='float64')
-
-        def minimize_this(args):
-            shapes[~fmask] = args
-            try:
-                return self.nnlf(data, *shapes)
-            except ValueError:
-                return np.inf
-
-        def curve_to_be_fit(x, *args):
-            shapes[~fmask] = args
-            try:
-                if fit_cdf:
-                    return self.cdf(x, *shapes, ignore_checks=True)
-                return self.pdf(x, *shapes, ignore_checks=True)
-            except ValueError:
-                # Invalid trial parameters (e.g. mode outside the bounds,
-                # sigma <= 0) now raise instead of returning NaN; steer the
-                # optimizer away with a large, finite residual.
-                return np.full(np.shape(x), 1e6)
-
-        with np.errstate(invalid='ignore', divide='ignore'):
-
-            if MLE:
-                results = minimize(minimize_this, gparams,
-                                   method='Nelder-Mead')
-                if not results.success:
-                    raise Exception(results)
-                shapes[~fmask] = results.x
-
-            else:
-                try:
-                    xdata, counts = np.unique(data, return_counts=True)
-                    ydata = np.cumsum(counts, dtype=np.double) / sample_size
-                    fit_cdf = True
-                    results = curve_fit(curve_to_be_fit, xdata, ydata,
-                                        p0=gparams)
-                except Exception:
-                    ydata, xdata = np.histogram(data, density=True,
-                                                bins=sample_size)
-                    xdata = np.mean([xdata[:-1], xdata[1:]], axis=0)
-                    fit_cdf = False
-                    results = curve_fit(curve_to_be_fit, xdata, ydata,
-                                        p0=gparams)
-
-                shapes[~fmask] = results[0]
-
-            if verbose:
-                return shapes, results
-            return shapes
+    @staticmethod
+    def to_bounds(c, s, loc=0.0, scale=1.0):
+        """(c, s, loc, scale) -> (mode, sigma, lower, upper). Inverse of
+        bounds_to_shapes; e.g. bl2.to_bounds(*bl2.fit(data))."""
+        c, s, loc, scale = (np.asarray(v, dtype=float)
+                            for v in (c, s, loc, scale))
+        return ((loc + c * scale)[()], (s * scale)[()], loc[()],
+                (loc + scale)[()])
 
 
 bl2 = bounded_lognorm2_gen()

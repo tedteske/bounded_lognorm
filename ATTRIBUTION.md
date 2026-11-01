@@ -18,6 +18,7 @@ This notebook contains work of three distinct kinds. They are separated below so
 - *Performance refactor of the class:* hoisting the shape parameters and normalizing constant `Z` out of `pdf` (with `lru_cache`); vectorized composite Gauss–Legendre quadrature; restriction of all integration to an *effective support* located by bisection outward from the mode; the cached PCHIP cumulative grid backing `ppf`/`rvs`/`median`.
 - The regression test cell.
 - *Phase 2 math verification and fixes:* proofs that the mode of BL2 is exactly `mode` and that BL2 is C∞ (BL is only C¹), that Z ≤ 1 (a Bhattacharyya coefficient), and of the effective-support truncation bound; a stable, scale-free solver for the `lognorm_params` quartic (same equation, new numerics); mode-graded quadrature panels; moments by quadrature in place of the grid sum; argument guards; regression Suite D against a 30-digit reference. See `docs/phase2_math_verification.md`.
+- *Phase 3 scipy.stats conformance:* the observation that BL2 is an exact location-scale family (Z is scale-free), and the resulting standard form on [0, 1] with shapes `c` = relative mode and `s` = relative sigma, `loc` = lower, `scale` = upper − lower; the `from_bounds` / `bounds_to_shapes` / `to_bounds` bridge and its `None`-bound convention; the `_pdf`/`_logpdf`/`_cdf`/`_sf`/`_ppf`/`_rvs`/`_stats`/`_munp`/`_entropy`/`_fitstart` hooks with caching grouped by distinct (c, s); carrying the precision dial through freezing; entropy by quadrature of −f ln f; the 1e-40 effective-support cutoff for tail accuracy; regression Suite E against a 40-digit reference. See `docs/phase3_api_conformance.md`.
 
 **C. Third-party work — cited below**
 
@@ -34,6 +35,15 @@ Phase 2 (Nov 2026) intentionally changes these results:
 - **`mean`, `var`, `std`, `stats`, `moment`, `entropy`.** The original grid-sum moments were biased (weights of `(upper − lower)/n` instead of `/(n − 1)`, never renormalized), applied a sample-skewness correction to a population moment, and aliased narrow peaks on a fixed 1001-point grid. They are now integrated by quadrature and match a 30-digit reference to ~1e-12. Example: `var(100, 1)` was 2.68; it is now 0.99999.
 - **Extreme parameters.** sigma/mode outside roughly 1e-5 to 1e2 (sigma → 0, very wide bounds, mode very near a bound) previously lost accuracy or returned NaN; results there now agree with the reference down to the float64 resolution floor.
 - **Invalid inputs raise.** Infinite bounds, and invalid parameters passed with `ignore_checks=True`, now raise `ValueError` instead of returning NaN or a plausible-looking number. A `RuntimeWarning` flags sigma below 1e-8 of the coordinate scale.
+
+Phase 3 (Nov 2026) changes the public API. Details and a migration guide are in `docs/phase3_api_conformance.md`:
+
+- **Signature.** Every method now takes `(c, s, loc, scale)` instead of `(mode, sigma, lower, upper)`. Old positional calls are read as the new parameters and return NaN (scipy's convention for invalid shapes) rather than raising. `bl2.from_bounds(mode, sigma, lower, upper)` reproduces the old parameter sets, and only it accepts `None` bounds.
+- **`entropy`** is now BL2's own differential entropy, by quadrature. The original truncated-normal adaptation is retired: it was close for near-symmetric cases (2.860 vs 2.864 nats at mode 5, σ 10 on (−5, 20)) but off by 0.18 nats with the mode near a bound (0.413 vs 0.236 at mode 0.01, σ 1 on (0, 10)). Both figures use the corrected Phase 2 moments in the old formula.
+- **`moment(n)`** returns a value for every n (it returned `None` for n ≥ 5).
+- **`fit`** is scipy's generic estimator (MLE, or `method='MM'`) over (c, s, loc, scale), with `fc`/`fs`/`floc`/`fscale` to fix parameters. The original least-squares-on-the-empirical-CDF option (`MLE=False`) and fixing `mode` or one bound alone are not carried over.
+- **`ignore_checks` and `normed`** are gone. `normalizing_constant(c, s)` returns Z; `pdf × Z` is the old `normed=False` density.
+- **Tails.** `sf` is integrated from the right and the effective-support cutoff moved from 1e-14 to 1e-40 of the peak density, so upper-tail `sf` and lower-tail `cdf` keep ~1e-12 relative accuracy down to ~1e-32 (previously ~1e-16 absolute).
 
 ### Link audit
 
@@ -53,7 +63,7 @@ Checked July 2026. Changes from the original reference list:
 
 1. Log-normal distribution. https://en.wikipedia.org/wiki/Log-normal_distribution
 2. Normal distribution. https://en.wikipedia.org/wiki/Normal_distribution
-3. Truncated normal distribution. https://en.wikipedia.org/wiki/Truncated_normal_distribution — basis for the `entropy` adaptation.
+3. Truncated normal distribution. https://en.wikipedia.org/wiki/Truncated_normal_distribution — basis for the original `entropy` adaptation (replaced in Phase 3).
 4. Mode (statistics). https://en.wikipedia.org/wiki/Mode_(statistics)
 5. Probability density function. https://en.wikipedia.org/wiki/Probability_density_function
 6. Cumulative distribution function. https://en.wikipedia.org/wiki/Cumulative_distribution_function
@@ -78,7 +88,7 @@ Checked July 2026. Changes from the original reference list:
 17. Davis, P. J., and Rabinowitz, P. *Methods of Numerical Integration*, 2nd ed. Academic Press, 1984. — Gauss–Legendre and composite quadrature.
 18. Fritsch, F. N., and Carlson, R. E. "Monotone Piecewise Cubic Interpolation." *SIAM Journal on Numerical Analysis*, vol. 17, no. 2, 1980, pp. 238–246. — the PCHIP scheme used for the cached CDF/PPF grid.
 19. `scipy.stats.rv_continuous`. https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.rv_continuous.html
-20. `scipy.optimize.curve_fit`. https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html
+20. `scipy.optimize.curve_fit`. https://docs.scipy.org/doc/scipy/reference/generated/scipy.optimize.curve_fit.html — used by the original CDF-curve `fit` (not carried into Phase 3).
 21. `scipy.interpolate.PchipInterpolator`. https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.PchipInterpolator.html
 22. `scipy.integrate.cumulative_trapezoid`. https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.cumulative_trapezoid.html
 23. `numpy.polynomial.legendre.leggauss`. https://numpy.org/doc/stable/reference/generated/numpy.polynomial.legendre.leggauss.html
