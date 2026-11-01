@@ -1,6 +1,6 @@
 # BL2 — Packaging for PyPI (Phase 4)
 
-**Status:** packaged on top of Phase 3 commit `357aabe` (Nov 2026). Not yet published. Full test suite: 434 passed, 18 skipped (Suite B, which needs the original implementation).
+**Status:** released. `bounded-lognorm` 0.1.0 was published to PyPI on 1 Nov 2026 from tag `v0.1.0` (commit `493a912`); see §8. Full test suite: 434 passed, 18 skipped (Suite B, which needs the original implementation).
 
 **Epistemic labels**, as in Phases 2 and 3: *Numerical* = measured on this machine or in CI; true for what was tested, not a guarantee beyond it.
 
@@ -11,7 +11,7 @@
 - **Distribution name `bounded-lognorm`, import name `bounded_lognorm`.** PyPI had no project under `bounded-lognorm`, `bounded_lognorm` (the same name after normalization) or `boundedlognorm`.
 - **Version 0.1.0.** 0.x signals that the API may still change; Phase 3 changed it.
 - **BL2 only.** The piecewise BL stays in `bounded_lognorm.ipynb`. It has closed-form CDF and quantile functions, which BL2 cannot have (Phase 1), so it is worth keeping. But it never went through Phases 2–3: its moments are the old biased grid sums, and it is only C¹ at the mode. The two are different distributions: the maximum CDF gap between them is 0.03–0.05 for typical cases and 0.26 with the mode near a bound (Numerical, 8 cases). It could ship later as `bl`, in its own `_bl.py`.
-- **Branch.** Phase 4 is stacked on the PR #16 branch until that PR merges into master; releases are tagged from master.
+- **Branch.** Phase 4 was stacked on the PR #16 branch; #16 (Phases 1–3) and then #17 (Phase 4) were merged into master with merge commits. Releases are tagged from master.
 
 ## 2. Package layout
 
@@ -60,15 +60,28 @@ Trusted Publishing (OIDC): no API token is stored anywhere.
 - **PyPI:** publish a GitHub release whose tag is `v` plus the version (`v0.1.0`). The build job refuses a tag that does not match `__version__`.
 - Both paths build once, run `twine check`, run the full suite against the built wheel, then upload that same artifact.
 
-One-time setup, done by the account owner:
+One-time setup (done 1 Nov 2026):
 
-1. On https://test.pypi.org/manage/account/publishing/ add a *pending* trusted publisher: PyPI project name `bounded-lognorm`, owner `tedteske`, repository `bounded_lognorm`, workflow `publish.yml`, environment `testpypi`.
-2. The same on https://pypi.org/manage/account/publishing/, with environment `pypi`.
-3. Optional: in the repository settings, give the `pypi` environment a required reviewer, so a release waits for approval before uploading. GitHub creates both environments on first use if they do not exist.
+1. On TestPyPI, a trusted publisher for project `bounded-lognorm`: owner `tedteske`, repository `bounded_lognorm`, workflow `publish.yml`, environment `testpypi`. It was added as *pending* and became an ordinary publisher when the first upload created the project.
+2. The same on PyPI, with environment `pypi`.
+3. The `pypi` GitHub environment requires approval from `tedteske` (self-review allowed), so a release waits in the Actions tab until approved. The `testpypi` environment has no protection rule.
+
+Releasing a new version:
+
+1. Bump `__version__` in `src/bounded_lognorm/__init__.py` and add a dated CHANGELOG entry; merge to master.
+2. Optional dry run: Actions → publish → Run workflow (TestPyPI). The version must not already exist on TestPyPI.
+3. Create a GitHub release on master with tag `v<version>`. Approve the `pypi` deployment when the run pauses.
 
 A version can be uploaded to an index only once. If the TestPyPI dry run reveals a problem, re-test with a dev version (for example `0.1.0.dev1`) rather than reusing 0.1.0; TestPyPI and PyPI are separate, so 0.1.0 remains available for the real release.
 
-## 8. Still open
+## 8. Release record: 0.1.0 (Numerical)
+
+- **CI on PR #17:** all 10 jobs passed (Ubuntu with Python 3.10–3.15 on the latest dependencies, Python 3.10 on the minimum dependencies, macOS and Windows on 3.13, and the build-and-check job).
+- **TestPyPI dry run:** the manually triggered publish run uploaded the wheel and sdist with digital attestations. In Google Colab (Python 3.13, Colab's own NumPy and SciPy), installing from TestPyPI gave version 0.1.0 from the installed location and a mean of 5.872972571882167 for mode 5, σ 10 on (−5, 20), equal to the 30-digit reference. The full suite from the TestPyPI sdist, run against that install, gave 434 passed, 18 skipped.
+- **PyPI release:** GitHub release `v0.1.0` at `493a912`; the publish run passed its tag check and the suite against the built wheel, waited for approval, and uploaded. https://pypi.org/project/bounded-lognorm/
+- **Check after release:** `pip install bounded-lognorm` into a clean Python 3.12 environment gave 0.1.0 and the same mean to every printed digit. PyPI lists `Requires-Python >=3.10`, `numpy>=1.23.5`, `scipy>=1.9` and license `MIT`.
+
+## 9. Still open
 
 - From Phase 3: fitting by CDF curve, and fixing `mode` or one bound alone (`fit_bounds`); a dedicated `_isf` for deep upper-tail quantiles; the mass not following the mode as mode → lower.
 - `Applications_100m_Sprints.ipynb` imports `from bounded_lognorm import bounded_lognorm`, the piecewise BL, which this package does not provide. It ran against a module exported from the original notebook.
