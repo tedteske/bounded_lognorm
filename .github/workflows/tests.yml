@@ -1,0 +1,89 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.deps }} deps
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]
+        deps: [latest]
+        include:
+          # The declared floor (pyproject.toml): oldest Python, NumPy, SciPy.
+          - { os: ubuntu-latest, python: "3.10", deps: minimum }
+          # Other platforms, in case quadrature or libm details differ.
+          - { os: macos-latest, python: "3.13", deps: latest }
+          - { os: windows-latest, python: "3.13", deps: latest }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+
+      - name: Pin the minimum supported NumPy and SciPy
+        if: matrix.deps == 'minimum'
+        shell: bash
+        run: printf 'numpy==1.23.5\nscipy==1.9.3\n' > "$RUNNER_TEMP/constraints.txt"
+
+      - name: Install the package (not editable) and the test group
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.deps }}" = minimum ]; then
+            python -m pip install . --group test -c "$RUNNER_TEMP/constraints.txt"
+          else
+            python -m pip install . --group test
+          fi
+          python -c "import sys, numpy, scipy, bounded_lognorm as b; print(sys.version); print('numpy', numpy.__version__, 'scipy', scipy.__version__); print('bounded_lognorm', b.__version__, b.__file__)"
+
+      - name: Run the test suite
+        run: python -m pytest
+
+  build:
+    name: Build and check the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      - name: Install the wheel in a clean environment and import it
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/venv/bin/python" -c "from bounded_lognorm import bl2, __version__; print(__version__, float(bl2.from_bounds(5, 10, -5, 20).cdf(5)))"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/

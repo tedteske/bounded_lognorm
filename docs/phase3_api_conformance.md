@@ -97,6 +97,6 @@ E3 (loc/scale equivariance) and E9 (bridge round trip, generic methods) are prop
 ## 10. Still open
 
 - **Fitting by CDF curve.** The original `fit(MLE=False)` least-squares on the empirical CDF, and fixing `mode` or one bound alone, are not carried over. They could return as a `fit_bounds` helper if wanted.
-- **Package namespace.** `from .bl2 import bl2` in `__init__.py` makes `bounded_lognorm.bl2` resolve to the instance, shadowing the submodule (pre-existing; `import bounded_lognorm.bl2 as m` returns the instance). Worth renaming before PyPI (Phase 4).
+- **Package namespace.** `from .bl2 import bl2` in `__init__.py` makes `bounded_lognorm.bl2` resolve to the instance, shadowing the submodule (pre-existing; `import bounded_lognorm.bl2 as m` returns the instance). Worth renaming before PyPI (Phase 4). *Resolved in Phase 4: the module is now `_bl2.py`; see `docs/phase4_packaging.md`.*
 - **`isf` deep tail.** scipy's `isf` is `ppf(1 − q)`, so it loses relative accuracy for q below ~1e-12 even though `sf` does not. A dedicated `_isf` would invert `_sf`.
 - From Phase 2, unchanged: as mode → lower the mass does not follow the mode (user-facing note); bounds → ∞ giving SD → σ remains a sketch plus numerics.
