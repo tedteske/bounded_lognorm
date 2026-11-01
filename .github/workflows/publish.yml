@@ -1,0 +1,92 @@
+# Publishes with PyPI Trusted Publishing (OIDC): no API tokens are stored.
+#
+#   Run this workflow by hand (Actions > publish > Run workflow)  -> TestPyPI
+#   Publish a GitHub release whose tag is v<version>, e.g. v0.1.0 -> PyPI
+#
+# One-time setup: add a trusted publisher on TestPyPI and on PyPI with
+# owner tedteske, repository bounded_lognorm, workflow publish.yml, and
+# environment testpypi / pypi respectively (see docs/phase4_packaging.md).
+
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, check and test the distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      - name: Check that the release tag matches the package version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/bounded_lognorm/__init__.py)
+          echo "tag=$TAG version=$VERSION"
+          test "$TAG" = "v$VERSION"
+
+      - name: Run the test suite against the built wheel
+        run: |
+          python -m pip install dist/*.whl pytest
+          python -m pytest
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    name: Publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/bounded-lognorm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/bounded-lognorm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

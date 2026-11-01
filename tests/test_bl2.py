@@ -1,7 +1,9 @@
 """
-Regression tests for bounded_lognorm.bl2.
+Regression tests for the BL2 distribution (bounded_lognorm._bl2).
 
-Run:            pytest tests/
+The tests import the INSTALLED package (src layout), so install it first:
+    pip install -e . --group test       (pip >= 25.1)
+Then run:       pytest
 Or directly:    python tests/test_bl2.py   (runs pytest on this file)
 
 Every check of the pre-pytest script is one pytest item here, parametrized
@@ -11,7 +13,6 @@ Gold values and tolerances are unchanged from that script.
 Author: Ted Teske with Claude (Anthropic), 2026.
 """
 import functools
-import os
 import pickle
 import sys
 import warnings
@@ -20,9 +21,7 @@ import numpy as np
 import pytest
 from scipy.integrate import quad
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from bounded_lognorm.bl2 import (                       # noqa: E402
+from bounded_lognorm._bl2 import (
     bounded_lognorm2_gen,
     lognorm_pdf, lognorm_params,
     _unnorm_pdf, _reference_unnorm,

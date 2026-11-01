@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bounded-lognorm"
+dynamic = ["version"]
+description = "Bounded lognormal (BL2) continuous distribution for scipy.stats: a smooth, mode/sigma-parametrized distribution on a finite interval."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Ted Teske" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23.5",
+    "scipy>=1.9",
+]
+keywords = [
+    "statistics", "probability", "distribution", "lognormal",
+    "bounded", "scipy", "monte carlo",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Homepage = "https://github.com/tedteske/bounded_lognorm"
+Source = "https://github.com/tedteske/bounded_lognorm"
+Issues = "https://github.com/tedteske/bounded_lognorm/issues"
+Changelog = "https://github.com/tedteske/bounded_lognorm/blob/master/CHANGELOG.md"
+
+[dependency-groups]
+test = ["pytest>=7"]
+
+[tool.hatch.version]
+path = "src/bounded_lognorm/__init__.py"
+
+# Recent hatchling writes Core Metadata 2.5 (PEP 794); PyPI's support for 2.5
+# was not confirmed when this was set (Nov 2026), and 2.4 (PEP 639 license
+# fields) is all this package needs. Remove once PyPI accepts 2.5.
+[tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
+include = [
+    "src/bounded_lognorm",
+    "tests",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "ATTRIBUTION.md",
+    "LICENSE",
+]
+
+[tool.hatch.build.targets.wheel]
+core-metadata-version = "2.4"
+packages = ["src/bounded_lognorm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
