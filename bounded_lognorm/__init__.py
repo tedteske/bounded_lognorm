@@ -1,0 +1,16 @@
+"""
+bounded_lognorm -- bounded lognormal continuous probability distributions.
+
+This package provides the BL2 (bounded lognormal 2) distribution, a custom
+scipy.stats.rv_continuous subclass using the non-piecewise geometric-mean
+formulation (Eq. 3). See bounded_lognorm.bl2 for the implementation and its
+speed/precision dial.
+
+Attribution (see ATTRIBUTION.md for the full, tiered breakdown and references):
+  - Original work (2020-2024): Ted Teske -- the distributions, the mode/sigma
+    reparametrization, the rv_continuous subclass and its API.
+  - Optimization & dial (2026): Ted Teske with Claude (Anthropic).
+"""
+from .bl2 import bounded_lognorm2_gen, bl2, PRECISION_DIAL
+
+__all__ = ["bounded_lognorm2_gen", "bl2", "PRECISION_DIAL"]
