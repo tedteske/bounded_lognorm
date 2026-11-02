@@ -1011,6 +1011,11 @@ def test_F4_isf_shapes_and_body_agree_with_ppf():
 #   covariance s^2 = SSR / m (not m - p)        -> G3
 #   free bounds not kept outside a fixed mode   -> G4c (G4b still passes:
 #     the penalty on invalid trial points steers the optimizer back)
+#   0.2.1 collapse check off                    -> G4d (and BL's H18b)
+#   COLLAPSE_RTOL loosened to 1                 -> G4b, G4d (MLE false alarm)
+#   collapsed bound's cov left as computed      -> G4d (and H18b)
+#   a distance threshold (1e-6 of the data range) in place of the
+#     interior-optimum test                     -> G4b (a genuine 1e-6 gap)
 # ---------------------------------------------------------------------------
 from scipy.optimize import curve_fit                     # noqa: E402
 
@@ -1126,6 +1131,41 @@ def test_G4c_runaway_parameters_reported_as_failure():
         with pytest.warns(RuntimeWarning, match="ran away toward its cap"):
             g = _d.fit_bounds(data, method)
         assert not g.success
+
+
+def _collapse_data():
+    """Data that fall off steeply at their maximum (10.4 Beta(8, 2), the
+    shape of the men's 100 m speeds in the Phase 6 sprints notebook), and
+    their mirror image."""
+    x = 10.4 * np.random.default_rng(5).beta(8, 2, 800)
+    return x, 10.4 - x
+
+
+def test_G4d_bound_collapsing_onto_the_data_reported_as_failure():
+    """0.2.1. With the lower bound fixed far below such data, least squares
+    keeps improving as the upper bound approaches max(data); it used to
+    stop a hair outside, report success, and give a standard error of ~0.
+    Mirrored, the free lower bound collapses onto min(data). MLE on the
+    same data puts the bound well outside (~2e-2 of the range): no false
+    alarm, which also guards the threshold against being loosened."""
+    _d = bounded_lognorm2_gen()
+    x, y = _collapse_data()
+    for data, kw, side, edge in ((x, {'flower': 0.0}, 3, 'upper'),
+                                 (y, {'fupper': 10.4}, 2, 'lower')):
+        span = np.ptp(data)
+        with pytest.warns(RuntimeWarning,
+                          match=f"{edge} collapsed onto (max|min)"):
+            g = _d.fit_bounds(data, 'LSQ', **kw)
+        assert not g.success
+        assert abs(g[side] - (data.max() if side == 3 else data.min())) \
+            < 1e-6 * span
+        assert np.all(np.isnan(g.cov[side])) and np.isnan(g.stderr[side])
+        assert np.isfinite(g.stderr.mode) and g.stderr.mode > 0
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', RuntimeWarning)
+            m = _d.fit_bounds(data, 'MLE', **kw)
+        gap = (m.upper - data.max()) if side == 3 else (data.min() - m.lower)
+        assert m.success and gap > 1e-3 * span, (gap / span, m.message)
 
 
 @ignore_runtime_warnings

@@ -54,7 +54,7 @@ fit = bl2.fit_bounds(sample, 'LSQ', fmode=5)       # least squares, mode held at
 fit.stderr.upper                                   # LSQ also gives a covariance (see its docstring)
 ```
 
-A fit whose sigma or a bound runs off toward infinity, because the data cannot pin it down, is reported with `fit.success == False` and a warning rather than returned as if it were an answer.
+The data cannot always pin every parameter down. A fit whose sigma or a bound runs off toward infinity, or (since 0.2.1) whose free bound collapses onto the smallest or largest data value, is reported with `fit.success == False` and a warning rather than returned as if it were an answer. A collapsed bound is the sample extreme, not an estimate beyond it, and its standard error is NaN.
 
 `bl` has the same `from_bounds`, `fit`, `fit_bounds`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
 
