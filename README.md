@@ -4,13 +4,18 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/bounded-lognorm)](https://pypi.org/project/bounded-lognorm/)
 [![tests](https://github.com/tedteske/bounded_lognorm/actions/workflows/tests.yml/badge.svg)](https://github.com/tedteske/bounded_lognorm/actions/workflows/tests.yml)
 
-A bounded lognormal continuous probability distribution for `scipy.stats`.
+Bounded lognormal continuous probability distributions for `scipy.stats`.
 
 The **bounded lognormal** is derived from the [lognormal distribution](https://en.wikipedia.org/wiki/Log-normal_distribution). Unlike the normal and lognormal, its domain has both a lower and an upper bound, and it may be symmetric or skewed either way depending on its parameters. That makes it a natural fit for quantities with known limits, such as adult height, task durations with a hard deadline, or sprint times.
 
 It is parametrized the way people tend to describe such quantities: by its **mode** (the most likely value), a spread **sigma**, and the **bounds**.
 
-This package provides **BL2**, the smooth (C∞) form of the distribution, as a full `scipy.stats.rv_continuous` subclass. Every scipy method works: `pdf`, `cdf`, `ppf`, `rvs`, `stats`, `moment`, `entropy`, `fit`, freezing, and the rest.
+This package provides two forms of it, each a full `scipy.stats.rv_continuous` subclass on which every scipy method works (`pdf`, `cdf`, `ppf`, `rvs`, `stats`, `moment`, `entropy`, `fit`, freezing, and the rest):
+
+- **`bl2`**, BL2: the smooth (C∞) geometric-mean form. Its CDF has no closed form, so it is computed by quadrature, with a speed/precision dial.
+- **`bl`**, BL: the original piecewise form, a lognormal below the mode joined to a mirrored lognormal above it. Everything about it is in closed form, so it is exact and fast, but its density is only C¹ at the mode.
+
+**They are different distributions, not two implementations of one.** With the same parameters their CDFs differ by 0.03–0.05 in typical cases and by up to about 0.26 with the mode near a bound. Pick one deliberately (see [Which one?](#which-one)) and do not mix results from the two.
 
 ## Installation
 
@@ -23,7 +28,7 @@ Requires Python 3.10+, NumPy 1.23.5+ and SciPy 1.9+.
 ## Quick start
 
 ```python
-from bounded_lognorm import bl2
+from bounded_lognorm import bl2      # or: from bounded_lognorm import bl
 
 rv = bl2.from_bounds(mode=5, sigma=10, lower=-5, upper=20)   # frozen distribution
 rv.pdf(0.0), rv.cdf(0.0), rv.ppf(0.9)
@@ -50,9 +55,22 @@ fit.stderr.upper                                   # LSQ also gives a covariance
 
 A fit whose sigma or a bound runs off toward infinity, because the data cannot pin it down, is reported with `fit.success == False` and a warning rather than returned as if it were an answer.
 
-## Definition
+`bl` has the same `from_bounds`, `fit`, `fit_bounds`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
 
-Let `f_L(x; m, σ)` be the lognormal density written in terms of its mode `m` and standard deviation `σ` (rather than the usual `μ_N`, `σ_N` of the underlying normal). BL2 is the normalized geometric mean of a lognormal rising from the lower bound and a mirrored lognormal falling to the upper bound:
+## Which one?
+
+Both take the same parameters and share the same API, so the choice is about the shape near the mode and about cost:
+
+- **BL2** (`bl2`) is smooth everywhere. Use it when the density's curvature matters (for example as a likelihood whose derivatives you rely on), or to reproduce work done with `bounded-lognorm` 0.1.0.
+- **BL** (`bl`) has closed forms for everything: density, CDF, survival function, quantiles in both tails, moments of any order, and entropy, all accurate to about 1e-13 or better. Its density has a kink in curvature at the mode (it is C¹ there, not C²). It suits Monte Carlo work and anything that needs many quantiles, and it reproduces the original notebook's BL (with the fixes listed in [ATTRIBUTION.md](https://github.com/tedteske/bounded_lognorm/blob/master/ATTRIBUTION.md)).
+
+Results from one do not carry over to the other.
+
+## Definitions
+
+Let `f_L(x; m, σ)` be the lognormal density written in terms of its mode `m` and standard deviation `σ` (rather than the usual `μ_N`, `σ_N` of the underlying normal).
+
+**BL2** is the normalized geometric mean of a lognormal rising from the lower bound and a mirrored lognormal falling to the upper bound:
 
 ```
 g(x) = sqrt( f_L(x - lower;  mode - lower, σ) · f_L(upper - x;  upper - mode, σ) )
@@ -64,15 +82,26 @@ Its mode is exactly `mode`. `sigma` is the standard deviation of each lognormal 
 
 The CDF has no elementary closed form, so it is computed by Gauss–Legendre quadrature over the region where the density is non-negligible, with the normalizing constant and a quantile grid cached per parameter set.
 
+**BL** joins the two lognormals at the mode instead, scaling the upper one to meet the lower one there:
+
+```
+g(x) = f_L(x - lower;  mode - lower, σ)              for x <= mode
+g(x) = k · f_L(upper - x;  upper - mode, σ)          for x >  mode,   k = f_L(mode - lower) / f_L(upper - mode)
+
+pdf(x) = g(x) / Z
+```
+
+Each piece is a truncated lognormal, so the CDF, quantiles, moments and entropy all follow from the normal CDF. In both distributions `sigma` is the standard deviation of each untruncated lognormal piece, and the mode is exactly `mode`.
+
 ## Parametrization
 
-BL2 is an exact location-scale family, so it follows the scipy convention: a standard form on [0, 1] with two shape parameters, moved by `loc` and `scale`.
+Both distributions are exact location-scale families, so they follow the scipy convention: a standard form on [0, 1] with two shape parameters, moved by `loc` and `scale`.
 
 - `loc = lower`, `scale = upper - lower`
 - `c = (mode - lower) / (upper - lower)`, the relative mode, 0 < c < 1 (as in `scipy.stats.triang`)
 - `s = sigma / (upper - lower)`, the relative sigma, s > 0
 
-`bl2.from_bounds(mode, sigma, lower, upper)` converts and returns a frozen distribution; `bl2.bounds_to_shapes` and `bl2.to_bounds` convert either way. The native form works like any scipy distribution:
+`from_bounds(mode, sigma, lower, upper)` converts and returns a frozen distribution; `bounds_to_shapes` and `to_bounds` convert either way. The native form works like any scipy distribution:
 
 ```python
 bl2.pdf(5, c=0.4, s=0.4, loc=-5, scale=25)    # same as rv.pdf(5) above
@@ -80,9 +109,9 @@ bl2.pdf(5, c=0.4, s=0.4, loc=-5, scale=25)    # same as rv.pdf(5) above
 
 `from_bounds` raises `ValueError` for invalid parameters. The native form follows scipy and returns NaN.
 
-## Speed and precision
+## Speed and precision (BL2)
 
-Set once, at construction:
+BL2 has a speed/precision dial, set once, at construction:
 
 ```python
 from bounded_lognorm import bounded_lognorm2_gen
@@ -100,6 +129,8 @@ The CDF is accurate to about 1e-13 at every position, and `rvs` uses the quantil
 
 Far-tail quantiles keep their relative accuracy: below a tail probability of 1e-3, `ppf` (lower tail) and `isf` (upper tail) are inverted in log-probability space, so `rv.isf(1e-20)` is accurate to about 2e-4 of its probability at `'balanced'` (6e-11 at `'exact'`), down to about 1e-30.
 
+BL needs no dial: its closed forms are at full accuracy at no extra cost, with tail quantiles accurate relative to their probability down to about 1e-300. `bounded_lognorm_gen(precision=...)` accepts the same settings, so code written for BL2's dial runs unchanged, but they have no effect.
+
 ## Testing
 
 ```
@@ -107,11 +138,13 @@ pip install -e . --group test     # pip 25.1 or later
 pytest
 ```
 
-The suite checks the distribution against independent 30- and 40-digit mpmath reference values at every precision setting.
+The suite checks BL2 against independent 30-, 40- and 50-digit mpmath reference values at every precision setting, and BL against an independent 50-digit model and against the original notebook implementation.
 
 ## Background and history
 
-The original bounded lognormal (BL) is piecewise: a lognormal below the mode and a mirrored, rescaled lognormal above it. It has closed-form CDF and quantile functions, but its density is only C¹ at the mode, where the second derivative jumps. BL2 replaces the two pieces with their geometric mean, which is smooth everywhere. The two are different distributions, not two versions of one, so results computed with BL will not reproduce with BL2. BL remains available in the [`bounded_lognorm.ipynb`](https://github.com/tedteske/bounded_lognorm/blob/master/bounded_lognorm.ipynb) notebook; this package ships BL2 only.
+The original bounded lognormal (BL) is piecewise: a lognormal below the mode and a mirrored, rescaled lognormal above it. It has closed-form CDF and quantile functions, but its density is only C¹ at the mode, where the second derivative jumps. BL2 replaces the two pieces with their geometric mean, which is smooth everywhere. The two are different distributions, not two versions of one, so results computed with BL will not reproduce with BL2.
+
+Version 0.1.0 shipped BL2 only. Since 0.2.0 the package also ships BL, ported from the [`bounded_lognorm.ipynb`](https://github.com/tedteske/bounded_lognorm/blob/master/bounded_lognorm.ipynb) notebook with the same conventions as BL2. Code written against the notebook's `bounded_lognorm` instance needs one change: `bounded_lognorm.pdf(x, mode, sigma, lower, upper)` becomes `bl.from_bounds(mode, sigma, lower, upper).pdf(x)`; the [Phase 5 note](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase5_bl_port.md) has the full migration guide.
 
 Derivations and verification notes:
 
@@ -120,6 +153,7 @@ Derivations and verification notes:
 - [Phase 3: scipy.stats conformance and migration from the old API](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase3_api_conformance.md)
 - [Phase 4: packaging](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase4_packaging.md)
 - [0.2.0: tail quantiles and bounds-form fitting](https://github.com/tedteske/bounded_lognorm/blob/master/docs/v0.2_tails_and_fit_bounds.md)
+- [Phase 5: porting BL into the package](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase5_bl_port.md)
 
 ## Citing
 
@@ -127,6 +161,6 @@ If you use this package in published work, please cite it. GitHub's "Cite this r
 
 ## Attribution and license
 
-The bounded lognormal distributions and their original implementation are by Ted Teske (2020–2024). The 2026 optimization, verification and scipy conformance work was done by Ted Teske with assistance from Claude (Anthropic). See [ATTRIBUTION.md](https://github.com/tedteske/bounded_lognorm/blob/master/ATTRIBUTION.md) for the detailed breakdown and references.
+The bounded lognormal distributions and their original implementations are by Ted Teske (2020–2024). The 2026 optimization, verification, scipy conformance and BL port were done by Ted Teske with assistance from Claude (Anthropic). See [ATTRIBUTION.md](https://github.com/tedteske/bounded_lognorm/blob/master/ATTRIBUTION.md) for the detailed breakdown and references.
 
 MIT License. See [LICENSE](https://github.com/tedteske/bounded_lognorm/blob/master/LICENSE).

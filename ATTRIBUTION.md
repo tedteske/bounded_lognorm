@@ -2,14 +2,15 @@
 
 ### Provenance
 
-This notebook contains work of three distinct kinds. They are separated below so that credit — and responsibility for errors — lands in the right place.
+This package and its notebooks contain work of three distinct kinds. They are separated below so that credit — and responsibility for errors — lands in the right place.
 
 **A. Original work — Ted Teske (2020–2024), sole author**
 
 - The bounded lognormal (BL) and bounded lognormal 2 (BL2) distributions themselves: the piecewise construction (eq. 2) and the geometric-mean construction (eq. 3).
 - The mode/σ reparametrization `lognorm_params`, including the quartic root formulation.
 - The `rv_continuous` subclass design and its full public API: `pdf`, `cdf`, `ppf`, `rvs`, `stats`, `moment`, `entropy`, `nnlf`, `fit`, and the supporting helper functions.
-- The adaptation of the truncated-normal entropy formula to BL2.
+- For BL: the closed-form `cdf` and `ppf` built by concatenating the two lognormal pieces, and the moments as weighted truncated-lognormal partial moments (after Wang et al. and Ford & McLaren, ref. 12–13), combined across the pieces with Raiford's formulas for combined distributions (ref. 11).
+- The adaptation of the truncated-normal entropy formula to BL and BL2.
 - All example usage, plots, and the empirical comparison to the normal distribution.
 
 **B. Collaborative work — Ted Teske with Claude (Anthropic), 2026**
@@ -19,6 +20,8 @@ This notebook contains work of three distinct kinds. They are separated below so
 - The regression test cell.
 - *Phase 2 math verification and fixes:* proofs that the mode of BL2 is exactly `mode` and that BL2 is C∞ (BL is only C¹), that Z ≤ 1 (a Bhattacharyya coefficient), and of the effective-support truncation bound; a stable, scale-free solver for the `lognorm_params` quartic (same equation, new numerics); mode-graded quadrature panels; moments by quadrature in place of the grid sum; argument guards; regression Suite D against a 30-digit reference. See `docs/phase2_math_verification.md`.
 - *Phase 3 scipy.stats conformance:* the observation that BL2 is an exact location-scale family (Z is scale-free), and the resulting standard form on [0, 1] with shapes `c` = relative mode and `s` = relative sigma, `loc` = lower, `scale` = upper − lower; the `from_bounds` / `bounds_to_shapes` / `to_bounds` bridge and its `None`-bound convention; the `_pdf`/`_logpdf`/`_cdf`/`_sf`/`_ppf`/`_rvs`/`_stats`/`_munp`/`_entropy`/`_fitstart` hooks with caching grouped by distinct (c, s); carrying the precision dial through freezing; entropy by quadrature of −f ln f; the 1e-40 effective-support cutoff for tail accuracy; regression Suite E against a 40-digit reference. See `docs/phase3_api_conformance.md`.
+
+- *Phase 5 port of BL into the package (0.2.0):* the proof that BL is an exact location-scale family, piece by piece; its standard form on [0, 1] with BL2's shapes `c`, `s` and the shared bounds bridge (moved into a mixin used by both); the mode-normalized closed form of the density, f(y) = f0·exp(−v²/2a²) with v the log-distance from the mode, and from it the Mills-ratio forms of the piece masses, of each tail (cdf from the left, sf from the right, and their logs), of the partial moments E[e^{jV}] = R((1+j)a)/R(a), and of the entropy; evaluating the partial moments about the mode, with a Stirling-series rearrangement for narrow pieces and a quadrature fallback for high orders, chosen by the computed condition number; quantile inversion in log probability with a Newton polish; elementwise evaluation preserving input order; regression Suites H (against an independent 50-digit model) and I (against the original notebook code, verbatim). See `docs/phase5_bl_port.md`.
 
 **C. Third-party work — cited below**
 
@@ -45,6 +48,17 @@ Phase 3 (Nov 2026) changes the public API. Details and a migration guide are in 
 - **`ignore_checks` and `normed`** are gone. `normalizing_constant(c, s)` returns Z; `pdf × Z` is the old `normed=False` density.
 - **Tails.** `sf` is integrated from the right and the effective-support cutoff moved from 1e-14 to 1e-40 of the peak density, so upper-tail `sf` and lower-tail `cdf` keep ~1e-12 relative accuracy down to ~1e-32 (previously ~1e-16 absolute).
 
+Phase 5 (Nov 2026) brings BL into the package. Relative to the notebook's `bounded_lognorm` (the first code cell of `bounded_lognorm.ipynb`), these results change on purpose; everything else (the density, cdf, ppf, and the mean and variance where they were well-conditioned) agrees with the original to its own precision. Details and a migration guide are in `docs/phase5_bl_port.md`:
+
+- **API.** As BL2 in Phase 3: methods take `(c, s, loc, scale)`; `bl.from_bounds(mode, sigma, lower, upper)` reproduces the old parameter sets and alone accepts `None` bounds; scipy hooks replace the public overrides, so `expect`, `interval`, freezing and the rest work; `ignore_checks` is gone; invalid shapes give NaN in the native API and `ValueError` from `from_bounds`. The notebook's instance name is not aliased: `from bounded_lognorm import bounded_lognorm` raises an ImportError with the migration, because under the new signature an old call would run and return NaN or a wrong number.
+- **Output order.** The original evaluated the points left of the mode first and concatenated, so `pdf`, `cdf` and `ppf` of unsorted input came back in the wrong order, and `rvs` returned its draws grouped by side of the mode (all left-of-mode draws first). Every method is now elementwise and keeps the input's order and shape; `rvs` returns draws in the order generated. The grouping mattered for Monte Carlo: 10,000 draws each from two independent BLs, paired elementwise, had a correlation of 0.59 with the original (−0.02 now).
+- **`rvs`** honours `random_state` (the original drew from the global `np.random`).
+- **Higher moments.** The original's closed forms were right but formed central moments as differences of raw moments, which cancel when a piece is narrow: skewness off by 3e-6 and kurtosis by up to 1e-2 at the needle cases (mode 1, σ 0.062 on (0, 100); mode 950, σ 1 on (−1000, 1000)). They are now taken about the mode, and agree with a 50-digit reference to ~1e-12. `moment(n)` returns a value for every n (it returned `None` for n ≥ 5).
+- **`entropy`** is BL's own differential entropy, in closed form. The truncated-normal adaptation was off by 0.005–0.04 nats over the test cases (0.04 with the mode near a bound).
+- **Tails.** `sf` and `isf` were `1 − cdf` and `ppf(1 − q)`, and `logpdf`/`logcdf`/`logsf` the logs of those; upper-tail values below ~1e-16 were lost and the logs went to −∞. Each tail is now computed from its own end, with relative accuracy down to the float64 range.
+- **`fit`** is scipy's estimator over (c, s, loc, scale); fitting in the bounds form with any parameters fixed, by MLE or least squares on the empirical cdf, is `bl.fit_bounds` (shared with BL2, with the midpoint empirical cdf by default; see `docs/v0.2_tails_and_fit_bounds.md`). The original's fallback to least squares on a histogram of the pdf is not carried over.
+- **`lognorm_params`** is the stable Phase 2 solver, shared with BL2. The original closed-form quartic root lost digits for small σ/mode (relative error up to ~2e-8 in the density at the needle cases).
+
 ### Link audit
 
 Checked July 2026. Changes from the original reference list:
@@ -63,7 +77,7 @@ Checked July 2026. Changes from the original reference list:
 
 1. Log-normal distribution. https://en.wikipedia.org/wiki/Log-normal_distribution
 2. Normal distribution. https://en.wikipedia.org/wiki/Normal_distribution
-3. Truncated normal distribution. https://en.wikipedia.org/wiki/Truncated_normal_distribution — basis for the original `entropy` adaptation (replaced in Phase 3).
+3. Truncated normal distribution. https://en.wikipedia.org/wiki/Truncated_normal_distribution — basis for the original `entropy` adaptation (replaced for BL2 in Phase 3 and for BL in Phase 5); its moment formulas also underlie the Phase 5 partial moments.
 4. Mode (statistics). https://en.wikipedia.org/wiki/Mode_(statistics)
 5. Probability density function. https://en.wikipedia.org/wiki/Probability_density_function
 6. Cumulative distribution function. https://en.wikipedia.org/wiki/Cumulative_distribution_function
@@ -103,3 +117,8 @@ Checked July 2026. Changes from the original reference list:
 **Informal / superseded (retained for provenance only)**
 
 28. Rejection-sampling approach, retained as a commented alternative in `rvs`: https://stackoverflow.com/questions/41470070
+
+**Phase 5 (BL closed forms)**
+
+29. Mills ratio. Abramowitz, M., and Stegun, I. A. *Handbook of Mathematical Functions*, §26.2 (normal probability function); computed here as `scipy.special.erfcx`. https://docs.scipy.org/doc/scipy/reference/generated/scipy.special.erfcx.html
+30. Stirling numbers of the second kind, as the coefficients of (eˣ − 1)ᵏ/k!. Graham, R. L., Knuth, D. E., and Patashnik, O. *Concrete Mathematics*, 2nd ed., §6.1 (Stirling numbers) and §7.4 (exponential generating functions). Addison-Wesley, 1994. — the series form of the BL partial moments for narrow pieces.
