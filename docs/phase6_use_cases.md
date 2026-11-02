@@ -17,7 +17,7 @@ The notebook fits a bounded distribution to Olympic 100m average speeds (2004–
 - The original's men's fit (mode 9.7526, sigma 0.3157, upper 10.593 m/s, i.e. 9.44 s) is not a least-squares optimum. Its squared error is 0.599. With the upper bound held at the same 10.593 the best fit reaches 0.198, and with it free 0.166. The gradient at the original's point is clearly nonzero (measured separately).
 - With SciPy 1.18, the original code from its own default starting point stops at mode = upper = 10.03 m/s, below the fastest run: an invalid fit. Started from `gmode=9.8` or `gupper=10.5` it returns the 9.44 s point (measured separately). So the published number was where curve_fit happened to stop.
 - The least-squares optimum is the boundary: the bound collapses onto the fastest speed in the data (Bolt, 9.63 s), for both families and both ECDF conventions. 0.2.0 returned this as a success with a standard error of 7e-21; 0.2.1 reports it (§6).
-- MLE places the bound just past the record: 9.61 s (BL) and 9.62 s (BL2). In bootstrap resamples (400 for BL, 200 for BL2), the fitted bound is a median 0.03 s (BL) and 0.02 s (BL2) faster than each resample's own fastest run. In 95% of resamples it is 0.00–0.11 s and 0.01–0.08 s faster.
+- MLE places the bound just past the record: 9.61 s (BL) and 9.62 s (BL2), from fits that describe the data poorly (below). The well-fitting least-squares fits and the poorly fitting MLE ones agree on the conclusion. In bootstrap resamples (400 for BL, 200 for BL2), the fitted bound is a median 0.03 s (BL) and 0.02 s (BL2) faster than each resample's own fastest run. In 95% of resamples it is 0.00–0.11 s and 0.01–0.08 s faster.
 - A bootstrap of a bound at the sample maximum is not a confidence interval: a resample cannot contain a run faster than the data's fastest. The notebook therefore states the result as **at or just past the record in the data**, as agreed, and drops the original's reading that Bolt could have run 9.44 s.
 
 **Women: the estimate depends on the method, the family and the fixed mode (Numerical).** Best possible time, lower bound 0, mode fixed at the most frequent speed (8.834 m/s):
@@ -25,7 +25,14 @@ The notebook fits a bounded distribution to Olympic 100m average speeds (2004–
 - BL: 10.34 s (LSQ, step ECDF), 10.31 s (LSQ, midpoint), 10.57 s (MLE)
 - BL2: 10.59 s (LSQ, step), 10.57 s (LSQ, midpoint), 10.67 s (MLE)
 
-So the ECDF convention moves it by 0.02–0.03 s, the family by 0.25 s under LSQ and 0.10 s under MLE, and the method by 0.23 s (BL) or 0.08 s (BL2). By likelihood BL2 fits both data sets better (negative log-likelihood lower by about 90 for the men and 28 for the women, same number of parameters).
+So the ECDF convention moves it by 0.02–0.03 s, the family by 0.25 s under LSQ and 0.10 s under MLE, and the method by 0.23 s (BL) or 0.08 s (BL2).
+
+**The MLE fits describe the data poorly (Numerical).** Kolmogorov–Smirnov distances between each fit and the data:
+
+- least squares: 0.06–0.09
+- MLE: 0.16–0.23
+
+With the lower bound fixed at 0, the likelihood must account for a few very slow runs (men down to 50.94 s, 1.96 m/s) with one sigma below the mode. It widens the whole distribution to do so, and the fitted density's peak falls to about 0.7–1.0 against a data peak near 2. So the MLE estimates of the bound rest on fits that miss the fast end, and least squares, the original's choice, is the better guide here. BL2 has the higher likelihood on both data sets (negative log-likelihood lower by about 90 for the men and 28 for the women), but neither MLE fit is good; under least squares the families fit about equally well. The first draft of the notebook said both MLE fits followed the bulk of the data; looking at the figure showed they did not, and the notebook now prints the KS distances and plots the least-squares fits.
 
 - Bootstrap (mode held fixed, LSQ, step ECDF): BL [10.24, 10.48] s (400/400 identified), BL2 [10.51, 10.70] s (198/200). For BL this is a little wider than the covariance interval, and it does not overlap BL2's.
 - With the mode free, the women's LSQ fit also collapses onto the record (found while testing the 0.2.1 fix). Re-taking the sample mode in each resample, as a bootstrap of the whole procedure must, 30 of 400 BL fits fail to identify a parameter and the rest span [9.46, 10.72] s. The interval with the mode held fixed is conditional on that choice; the notebook says so.
