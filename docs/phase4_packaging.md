@@ -68,7 +68,7 @@ One-time setup (done 1 Nov 2026):
 
 Releasing a new version:
 
-1. Bump `__version__` in `src/bounded_lognorm/__init__.py` and add a dated CHANGELOG entry; merge to master.
+1. Bump `__version__` in `src/bounded_lognorm/__init__.py`, and `version` and `date-released` in `CITATION.cff`; add a dated CHANGELOG entry; merge to master.
 2. Optional dry run: Actions → publish → Run workflow (TestPyPI). The version must not already exist on TestPyPI.
 3. Create a GitHub release on master with tag `v<version>`. Approve the `pypi` deployment when the run pauses.
 
@@ -83,6 +83,6 @@ A version can be uploaded to an index only once. If the TestPyPI dry run reveals
 
 ## 9. Still open
 
-- From Phase 3: fitting by CDF curve, and fixing `mode` or one bound alone (`fit_bounds`); a dedicated `_isf` for deep upper-tail quantiles; the mass not following the mode as mode → lower.
-- `Applications_100m_Sprints.ipynb` imports `from bounded_lognorm import bounded_lognorm`, the piecewise BL, which this package does not provide. It ran against a module exported from the original notebook.
-- The Wang et al. DOI in ATTRIBUTION.md is still unverified.
+- From Phase 3: the mass not following the mode as mode → lower. (`fit_bounds` and the deep-tail `isf` are resolved for 0.2.0; see `docs/v0.2_tails_and_fit_bounds.md`.)
+- `Applications_100m_Sprints.ipynb` imports `from bounded_lognorm import bounded_lognorm`, the piecewise BL, which this package does not provide. It ran against a module exported from the original notebook. The BL port is planned for 0.2.0.
+- ~~The Wang et al. DOI in ATTRIBUTION.md is still unverified.~~ Verified for 0.2.0: 10.3141/2315-07.

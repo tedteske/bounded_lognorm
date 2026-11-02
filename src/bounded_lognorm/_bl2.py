@@ -50,6 +50,8 @@ from scipy.optimize import brentq
 from scipy.special import erf, erfinv
 from scipy.stats import rv_continuous
 
+from ._fit import fit_bounds as _fit_bounds
+
 try:                                    # scipy >= 1.9; used by scipy.stats.fit
     from scipy.stats._distn_infrastructure import _ShapeInfo
 except ImportError:                     # pragma: no cover
@@ -610,6 +612,86 @@ def _effective_support(args, mode, lower, upper, tol=None):
     return float(a), float(b)
 
 
+def _grid_points(T, n_grid):
+    """
+    Abscissae of the cached grids (_cdf_grid and _tail_grid): the union of
+    two point sets, ~2 * n_grid points in all.
+
+      - n_grid uniform points over the effective support carry the body of
+        the distribution, where ppf inversion error is set by spacing;
+      - n_grid points shared equally among the graded panels resolve the
+        density wherever it changes on scales the uniform grid cannot see
+        (mode near a bound). Either set alone fails one of those regimes.
+    """
+    per = max(2, int(np.ceil(n_grid / (len(T.edges) - 1))))
+    refine = [np.linspace(lo, hi, per + 1)
+              for lo, hi in zip(T.edges[:-1], T.edges[1:])]
+    return np.unique(np.concatenate([np.linspace(T.a, T.b, n_grid)] + refine))
+
+
+# Below this tail probability (at either end) the grid positions of the dial
+# invert quantiles from _tail_grid, in log-probability space, instead of from
+# the body spline of _cdf_grid. Between _TAIL_Q / 10 and _TAIL_Q the two are
+# blended linearly in log q: an abrupt switch would let ppf step backwards by
+# the two methods' disagreement (~1e-3 relative in q at 'fast'), while the
+# blend stays monotone as long as they disagree by less than ~200%. See
+# _tail_grid.
+_TAIL_Q = 1e-3
+
+# The tail splines span tail probabilities up to this value, so they have
+# knots on both sides of _TAIL_Q.
+_TAIL_SPAN = 0.05
+
+_Tails = namedtuple('_Tails', 'lower upper logq_min_lower logq_min_upper')
+
+
+@lru_cache(maxsize=32)
+def _tail_grid(mode, sigma, lower, upper, n_quad, n_grid):
+    """
+    Cached quantile splines for the two tails (added in 0.2.0).
+
+    The body spline in _cdf_grid interpolates x against the cdf itself, so
+    its error is absolute in q (~1e-7 at 'balanced'), and it drops cdf steps
+    below 1e-12. Quantiles with q below ~1e-9 at either end were therefore
+    wrong by more than 100%, and isf(q) -- scipy's ppf(1 - q) -- could not
+    resolve any q below ~1e-16 at all.
+
+    Here x is interpolated against log F (lower tail) and log S (upper tail),
+    where F and S are integrated from the left and from the right with the
+    panel-table quadrature, so each keeps its relative accuracy deep into
+    its tail. The error is then relative in q, and roughly constant from
+    1e-3 down to the effective-support cutoff (Numerical: worst over the
+    test cases ~3e-3 at 'fast', 2e-4 at 'balanced', 2e-5 at 'precise').
+
+    Built lazily, only when a tail quantile is first requested, on the same
+    abscissae as _cdf_grid; rvs never uses it.
+
+    Returns a _Tails: `lower(log q)` and `upper(log q)` give x (nan outside
+    their knots), and logq_min_* is the log of the smallest tail probability
+    each spline reaches; below it the quantile is pinned to the effective
+    support edge, as sf and cdf are 0 there.
+    """
+    T = _panel_table(mode, sigma, lower, upper, n_quad)
+    xs = _grid_points(T, n_grid)
+    F = _gl_cdf(xs, mode, sigma, lower, upper, n_quad) / T.Z
+    S = _gl_sf(xs, mode, sigma, lower, upper, n_quad) / T.Z
+
+    def spline(x, P):
+        # x ordered so that the tail probability P increases along it.
+        m = (P > 0) & (P <= _TAIL_SPAN) & np.isfinite(P)
+        x, L = x[m], np.log(P[m])
+        # Require a real increment in log P, as _cdf_grid does in P.
+        keep = np.concatenate(([True], np.diff(L) > 1e-12)) if L.size else m[m]
+        x, L = x[keep], L[keep]
+        if L.size < 2:
+            return None, np.inf
+        return PchipInterpolator(L, x, extrapolate=False), float(L[0])
+
+    lo_spline, lo_min = spline(xs, F)
+    hi_spline, hi_min = spline(xs[::-1], S[::-1])
+    return _Tails(lo_spline, hi_spline, lo_min, hi_min)
+
+
 @lru_cache(maxsize=32)
 def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
     """
@@ -629,16 +711,7 @@ def _cdf_grid(mode, sigma, lower, upper, n_quad, n_grid):
     if not (Z > 0 and np.isfinite(Z)):
         raise ValueError("Density integrates to zero; check parameters.")
 
-    # Union of two point sets, ~2 * n_grid points in all:
-    #  - n_grid uniform points over the support (as before) carry the body of
-    #    the distribution, where ppf inversion error is set by spacing;
-    #  - n_grid points shared equally among the graded panels resolve the
-    #    density wherever it changes on scales the uniform grid cannot see
-    #    (mode near a bound). Either set alone fails one of those regimes.
-    per = max(2, int(np.ceil(n_grid / (len(edges) - 1))))
-    refine = [np.linspace(lo, hi, per + 1)
-              for lo, hi in zip(edges[:-1], edges[1:])]
-    xs = np.unique(np.concatenate([np.linspace(a, b, n_grid)] + refine))
+    xs = _grid_points(T, n_grid)
     F = _gl_cdf(xs, mode, sigma, lower, upper, n_quad) / Z
     F = np.maximum.accumulate(np.clip(F, 0.0, 1.0))   # guard fp wiggle
     F[0], F[-1] = 0.0, 1.0
@@ -773,8 +846,11 @@ class bounded_lognorm2_gen(rv_continuous):
         rv.pdf(x); rv.cdf(x); rv.mean(); rv.entropy()
         c, s, loc, scale = bl2.fit(data)
         mode, sigma, lower, upper = bl2.to_bounds(c, s, loc, scale)
+        mode, sigma, lower, upper = bl2.fit_bounds(data, flower=0)
 
     from_bounds accepts None for an unbounded side (see its docstring).
+    fit_bounds fits in the bounds form, with any of mode, sigma, lower and
+    upper held fixed, by MLE or least squares (see its docstring).
 
     MIGRATION from the pre-Phase-3 API: positional calls such as
     bl2.pdf(x, mode, sigma, lower, upper) are now read as (x, c, s, loc,
@@ -820,6 +896,14 @@ class bounded_lognorm2_gen(rv_continuous):
     at every position and is unaffected by the dial. Since Phase 3 these go
     through scipy's argument handling, which adds roughly 0.1-0.6 ms per call
     of 1000 points on top of the timings above.
+
+    Tail quantiles (0.2.0): below a tail probability of 1e-3, ppf (lower
+    tail) and isf (upper tail) keep their accuracy RELATIVE to q, down to
+    q ~ 1e-30. Worst measured error in q: ~3e-3 fast, 2e-4 balanced, 2e-5
+    precise (splines in log-probability space, built once per parameter
+    set on first use: ~4 / 30 / 250 ms), and 6e-11 exact (brentq on the
+    tail's own integral). Before 0.2.0 both were off by more than q itself
+    below q ~ 1e-9. (No percent signs in this docstring: scipy formats it.)
 
     Caching
     -------
@@ -920,6 +1004,9 @@ class bounded_lognorm2_gen(rv_continuous):
     def _grid(self, c, s):
         return _cdf_grid(c, s, 0.0, 1.0, self.n_quad, self.n_grid)
 
+    def _tails(self, c, s):
+        return _tail_grid(c, s, 0.0, 1.0, self.n_quad, self.n_grid)
+
     # -- scipy hooks: the distribution itself, in standard coordinates -----
     #
     # scipy calls these only for x inside (0, 1) (q inside (0, 1) for _ppf)
@@ -967,27 +1054,93 @@ class bounded_lognorm2_gen(rv_continuous):
     def _ppf(self, q, c, s):
         """
         At dial positions 'fast'/'balanced'/'precise' this inverts the cached
-        cumulative spline (fast; error set by n_grid). At 'exact' it instead
-        root-finds cdf(x) = q with brentq, to ~machine precision, at the cost
-        of one solve per quantile.
+        cumulative spline (fast; error set by n_grid), and below q = 1e-3 the
+        lower-tail spline in log-probability space, whose error is relative
+        in q (see _tail_grid). At 'exact' it instead root-finds cdf(x) = q
+        with brentq, to ~machine precision, at the cost of one solve per
+        quantile.
         """
         if self._ppf_method == 'solve':
             return _by_params(self._ppf_solve, q, c, s)
         return _by_params(self._ppf_grid, q, c, s)
 
-    def _ppf_grid(self, q, c, s):
+    def _isf(self, q, c, s):
+        """
+        Inverse survival function, x with sf(x) = q (added in 0.2.0).
+
+        scipy's default is ppf(1 - q), which cannot resolve q below ~1e-16
+        and loses relative accuracy well before that. Here the upper tail is
+        inverted from the right-integrated sf instead: at 'exact' by brentq
+        on sf, elsewhere by the upper-tail spline in log-probability space
+        for q below 1e-3 and the body spline (as ppf(1 - q)) above it.
+        """
+        if self._ppf_method == 'solve':
+            return _by_params(self._isf_solve, q, c, s)
+        return _by_params(self._isf_grid, q, c, s)
+
+    def _ppf_body(self, q, c, s):
+        """Body spline of _cdf_grid: x against the cdf itself. Accurate in
+        absolute q; used for every q by rvs, and above the tails by ppf."""
         _, ppf_spline, a, b = self._grid(c, s)
         y = ppf_spline(np.clip(q, 0.0, 1.0))
         # PCHIP returns nan outside its knots; pin those to the support.
         y = np.where(np.isnan(y), np.where(q >= 0.5, b, a), y)
         return np.clip(y, 0.0, 1.0)
 
+    def _tail_quantile(self, q, c, s, upper_tail, body):
+        """Replace `body` where q < _TAIL_Q with the tail-spline quantile,
+        blended in over the decade below _TAIL_Q (see _TAIL_Q)."""
+        q = np.asarray(q, dtype=float)
+        t = q < _TAIL_Q
+        if not np.any(t):
+            return body
+        tails = self._tails(c, s)
+        spline = tails.upper if upper_tail else tails.lower
+        lq_min = tails.logq_min_upper if upper_tail else tails.logq_min_lower
+        if spline is None:
+            return body
+        lq = np.log(q[t])
+        y = spline(lq)
+        T = self._table(c, s)
+        edge = T.b if upper_tail else T.a
+        # Below the smallest knot the tail probability is past the effective
+        # support cutoff: pin to the support edge (cdf/sf are 0 beyond it).
+        y = np.where(np.isnan(y) & (lq < lq_min), edge, y)
+        out = np.array(body, dtype=float)
+        sub = out[t]
+        # Weight of the body spline: 0 below _TAIL_Q / 10, 1 at _TAIL_Q.
+        w = np.clip((lq - np.log(_TAIL_Q / 10)) / np.log(10), 0.0, 1.0)
+        ok = ~np.isnan(y)
+        sub[ok] = w[ok] * sub[ok] + (1.0 - w[ok]) * y[ok]
+        out[t] = sub
+        return np.clip(out, 0.0, 1.0)
+
+    def _ppf_grid(self, q, c, s):
+        return self._tail_quantile(q, c, s, False, self._ppf_body(q, c, s))
+
+    def _isf_grid(self, q, c, s):
+        q = np.asarray(q, dtype=float)
+        # 1 - q is exact for q >= 0.5 and within 1e-16 of exact below it,
+        # far below the body spline's own error.
+        return self._tail_quantile(q, c, s, True,
+                                   self._ppf_body(1.0 - q, c, s))
+
     def _ppf_solve(self, q, c, s):
+        return self._solve(q, c, s, upper_tail=False)
+
+    def _isf_solve(self, q, c, s):
+        return self._solve(q, c, s, upper_tail=True)
+
+    def _solve(self, q, c, s, upper_tail):
+        """brentq on cdf(x) = q, or on sf(x) = q for the upper tail. Each
+        side is integrated from its own end, so the root keeps its relative
+        accuracy in q deep into that tail."""
         T = self._table(c, s)
         n_quad = self.n_quad
+        integral = _gl_sf if upper_tail else _gl_cdf
 
         def _f(x, target):
-            return float(_gl_cdf([x], c, s, 0.0, 1.0, n_quad)[0] / T.Z
+            return float(integral([x], c, s, 0.0, 1.0, n_quad)[0] / T.Z
                          - target)
 
         out = np.empty(np.shape(q))
@@ -1001,7 +1154,8 @@ class bounded_lognorm2_gen(rv_continuous):
                                      maxiter=200)
             except ValueError:
                 # q within rounding of 0 or 1: no sign change on [a, b].
-                out.flat[i] = T.b if qi >= 0.5 else T.a
+                far = (qi >= 0.5) != upper_tail
+                out.flat[i] = T.b if far else T.a
         return out
 
     def _rvs(self, c, s, size=None, random_state=None):
@@ -1012,7 +1166,9 @@ class bounded_lognorm2_gen(rv_continuous):
         and a brentq solve per sample would be needlessly slow.
         """
         u = random_state.uniform(size=size)
-        return _by_params(self._ppf_grid, u, c, s)
+        # The body spline only: tail-spline accuracy is irrelevant at
+        # sampling-noise level, and it would cost a second grid build.
+        return _by_params(self._ppf_body, u, c, s)
 
     # -- moments and entropy -------------------------------------------------
 
@@ -1085,6 +1241,66 @@ class bounded_lognorm2_gen(rv_continuous):
         y = (np.asarray(x, dtype=float) - loc) / scale
         return _reference_unnorm(y, *T.args).reshape(np.shape(y)) \
             / T.Z / scale
+
+    def fit_bounds(self, data, method='MLE', *, fmode=None, fsigma=None,
+                   flower=None, fupper=None, gmode=None, gsigma=None,
+                   glower=None, gupper=None, ecdf='midpoint'):
+        """
+        Fit in the bounds parametrization, holding any parameters fixed.
+
+        Parameters
+        ----------
+        data : array_like
+            The sample.
+        method : 'MLE' or 'LSQ'
+            'MLE' (default) maximizes the likelihood. 'LSQ' minimizes the
+            squared distance between the cdf and the empirical cdf at the
+            distinct data values -- the original notebook's fit(MLE=False).
+        fmode, fsigma, flower, fupper : float, optional
+            Hold that parameter fixed at this value. Any combination works,
+            e.g. flower=0 alone, or fmode alone (which the native fit cannot
+            express, since c depends on loc and scale).
+        gmode, gsigma, glower, gupper : float, optional
+            Starting guesses for free parameters. The defaults are the
+            median, the standard deviation, and bounds 5% of the data range
+            outside the data.
+        ecdf : 'midpoint' or 'step'
+            LSQ only. 'midpoint' (default) places the empirical cdf at the
+            middle of each jump, the Hazen position (i - 1/2)/n. 'step' uses
+            the top of each jump, i/n, as the original notebook did; it puts
+            the largest value at exactly 1, which pulls a fitted upper bound
+            toward max(data).
+
+        Returns
+        -------
+        BoundsFit
+            Unpacks as (mode, sigma, lower, upper) and carries .method,
+            .free, .nnlf, .success, .message, and for LSQ .cov and .stderr.
+
+        Notes
+        -----
+        Free bounds are kept outside the data (and outside a fixed mode), so
+        every trial parameter set is valid; a fixed bound must already be.
+        The optimizer runs on unconstrained transforms of the free
+        parameters: Nelder-Mead for MLE, scipy's least_squares for LSQ.
+
+        The LSQ covariance .cov is curve_fit's pcov in the bounds
+        parametrization, s^2 (J^T J)^-1 with s^2 = SSR / (m - p), which is
+        what the original fit returned. It treats the empirical-cdf
+        residuals as independent, which they are not, so its standard
+        errors understate the real uncertainty. For a confidence interval
+        on, say, the upper bound, refit bootstrap resamples of the data.
+        No covariance is offered for MLE: with a free bound the usual
+        regularity conditions for the inverse Fisher information do not
+        clearly hold.
+
+        Added in 0.2.0. For the native (c, s, loc, scale) parametrization
+        and scipy's own options, use fit().
+        """
+        return _fit_bounds(self, data, method, fmode=fmode, fsigma=fsigma,
+                           flower=flower, fupper=fupper, gmode=gmode,
+                           gsigma=gsigma, glower=glower, gupper=gupper,
+                           ecdf=ecdf)
 
     def from_bounds(self, mode, sigma, lower=None, upper=None):
         """

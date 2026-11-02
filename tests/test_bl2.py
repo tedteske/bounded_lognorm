@@ -832,5 +832,343 @@ def test_E9_bridge_and_generic_methods():
     assert ok
 
 
+# ---------------------------------------------------------------------------
+# SUITE F -- 0.2.0: tail quantiles (ppf and isf for q down to 1e-30)
+#
+# Through 0.1.0, isf was scipy's ppf(1 - q), and the grid positions inverted
+# ppf from a spline in q itself: both were wrong by more than 100% below
+# q ~ 1e-9. Tail quantiles are now inverted in log-probability space (grid
+# positions) or by brentq on the tail's own integral ('exact').
+#
+# Gold values come from a new independent 40-digit mpmath model of the same
+# kind as Suites D and E (bisection root of the quartic, tanh-sinh quadrature
+# over break points graded toward the mode and both bounds), checked against
+# the Suite D/E gold before use: lognorm_params to 4e-21, sf tail values to
+# 7e-19 and an edge quantile to 2e-19. Quantiles were solved by Newton on
+# log F and log S at 50 digits.
+#
+# Error metric: |x - x_gold| * pdf(x_gold) / q, the first-order relative
+# error in q. Measured worst over these cases (Nov 2026):
+#   fast 3e-3, balanced 2e-4, precise 2e-5, exact 6e-11.
+#
+# Mutation-checked (Nov 2026): each change below makes the listed tests fail --
+#   _isf removed (scipy's ppf(1 - q))          -> F1 at every position
+#   _isf_solve as ppf(1 - q) at 'exact'        -> F1 (exact)
+#   _ppf_grid without the tail spline          -> F2 (grid positions)
+#   tail S computed as 1 - F                   -> F1 (grid positions)
+#   abrupt switch instead of the blend         -> F3 (fast)
+# ---------------------------------------------------------------------------
+GOLD_TAIL_QUANTILES = {   # (q, isf(q), ppf(q)), 40-digit mpmath model
+    (5, 10, -5, 20): [
+        (1e-3, 17.14099716357759405163, -3.596935953794623744872),
+        (1e-6, 18.99793754649532788469, -4.61355808709492570582),
+        (1e-9, 19.54945046302352517747, -4.855251816311656722902),
+        (1e-12, 19.76933869624205201268, -4.93643087336219358688),
+        (1e-16, 19.89308369596746637585, -4.975307604361726713801),
+        (1e-20, 19.94553214240324514668, -4.989232470896235148707),
+        (1e-25, 19.97430837787739101533, -4.995731185341927709462),
+        (1e-30, 19.9869513707980467521, -4.998146900220186813749),
+    ],
+    (1, 3, 0, 10): [
+        (1e-3, 6.916502939203951659028, 0.08231188650815343736407),
+        (1e-6, 8.414427760944221602138, 0.01207919278374698375099),
+        (1e-9, 9.045505753951378710033, 0.002807095712276413739848),
+        (1e-12, 9.375692219974606017602, 0.0008259382733845558948425),
+        (1e-16, 9.616311764991982323998, 0.0002023140218737868909328),
+        (1e-20, 9.749501460241340453259, 0.00005882595015607486141832),
+        (1e-25, 9.844134018468641998489, 0.00001483624147192571314464),
+        (1e-30, 9.898332324840636440434, 0.000004281351481718289084631),
+    ],
+    (3, 1, 0, 10): [
+        (1e-3, 5.782747002424193282662, 1.060704621493393883214),
+        (1e-6, 6.918829542270133857244, 0.5452501317259286623339),
+        (1e-9, 7.58192087787287343426, 0.3277556338515739324827),
+        (1e-12, 8.028375088010816230472, 0.2139774879256014684515),
+        (1e-16, 8.441316730096204003705, 0.131197838782269645662),
+        (1e-20, 8.731893091241203764962, 0.08548302994915297513535),
+        (1e-25, 8.992273539008675158228, 0.0530800466358182549125),
+        (1e-30, 9.180742078819789925484, 0.03456542359495338227355),
+    ],
+    (9, 1, 0, 10): [
+        (1e-3, 9.852090203980510051418, 5.977439464024890482004),
+        (1e-6, 9.95993097622276148308, 4.654344655181778589069),
+        (1e-9, 9.985096364877486023095, 3.8410182897389865931),
+        (1e-12, 9.993481465405916407852, 3.269277370873043142251),
+        (1e-16, 9.997476795510150874318, 2.716748436512615636394),
+        (1e-20, 9.998902300998094746932, 2.309752961017998288442),
+        (1e-25, 9.999565721976725198642, 1.92800481679525610349),
+        (1e-30, 9.999811767608530891961, 1.638517587576972180788),
+    ],
+    (75, 5, 70, 100): [
+        (1e-3, 87.65258364348061758041, 70.73189593406208160421),
+        (1e-6, 92.00015608034917404082, 70.19886959940144310103),
+        (1e-9, 94.26106737042896726643, 70.07407136540509671439),
+        (1e-12, 95.65500266143371307072, 70.03242404767637004835),
+        (1e-16, 96.84257150739049205562, 70.01255972436579458376),
+        (1e-20, 97.61289304760743317214, 70.00546665560459556668),
+        (1e-25, 98.25123488148331100623, 70.00216368377023227321),
+        (1e-30, 98.67852128942726843169, 70.00093811906200312944),
+    ],
+    (1, 0.062, 0, 100): [
+        (1e-3, 1.201312861026384937153, 0.8205804283521858739875),
+        (1e-6, 1.315013178041464455348, 0.7314898886654940763434),
+        (1e-9, 1.402610537613965051018, 0.6690021169581543209427),
+        (1e-12, 1.477079116321956843743, 0.6197524239448872623002),
+        (1e-16, 1.563907841948014958809, 0.5665192541084216782671),
+        (1e-20, 1.641181229223216305263, 0.5227020053615891474361),
+        (1e-25, 1.728423249489339697505, 0.4769985708527150958166),
+        (1e-30, 1.808033695366894502736, 0.4385595664265351558458),
+    ],
+}
+
+TAIL_TOL = {'fast': 3e-2, 'balanced': 2e-3, 'precise': 2e-4, 'exact': 1e-9}
+
+
+def _tail_params():
+    return [pytest.param(level, case, id=f"{level}-{_case_id(case)}")
+            for level in LEVELS for case in GOLD_TAIL_QUANTILES]
+
+
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case", _tail_params())
+def test_F1_isf_upper_tail_matches_gold(level, case):
+    rv = _gen(level).from_bounds(*case)
+    rows = GOLD_TAIL_QUANTILES[case]
+    q = np.array([r[0] for r in rows])
+    xg = np.array([r[1] for r in rows])
+    rel = np.abs(np.asarray(rv.isf(q)) - xg) * rv.pdf(xg) / q
+    assert rel.max() < TAIL_TOL[level], \
+        "rel. err in q: " + " ".join(f"{qq:.0e}:{e:.1e}" for qq, e in zip(q, rel))
+
+
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level, case", _tail_params())
+def test_F2_ppf_lower_tail_matches_gold(level, case):
+    rv = _gen(level).from_bounds(*case)
+    rows = GOLD_TAIL_QUANTILES[case]
+    q = np.array([r[0] for r in rows])
+    xg = np.array([r[2] for r in rows])
+    rel = np.abs(np.asarray(rv.ppf(q)) - xg) * rv.pdf(xg) / q
+    assert rel.max() < TAIL_TOL[level], \
+        "rel. err in q: " + " ".join(f"{qq:.0e}:{e:.1e}" for qq, e in zip(q, rel))
+
+
+@ignore_runtime_warnings
+@pytest.mark.parametrize("level", LEVELS)
+def test_F3_tail_quantiles_monotone(level):
+    """ppf increases and isf decreases over q in [1e-40, 0.5], including
+    across the blend between the tail and body splines (1e-4 to 1e-3)."""
+    if level == 'exact':
+        # brentq everywhere: no blend to probe, and each quantile is a solve.
+        q = np.geomspace(1e-40, 0.5, 201)
+    else:
+        # A coarse sweep plus a dense cluster at each end of the blend: a
+        # step backwards there is smaller than the progress between
+        # neighbours of the coarse sweep.
+        seams = [qs * (1 + np.linspace(-1e-2, 1e-2, 401))
+                 for qs in (1e-4, 1e-3)]
+        q = np.unique(np.concatenate([np.geomspace(1e-40, 0.5, 4001)]
+                                     + seams))
+    worst = 0.0
+    for case in TEST_CASES:
+        rv = _gen(level).from_bounds(*case)
+        scale = case[3] - case[2]
+        worst = max(worst,
+                    -min(np.diff(rv.ppf(q)).min(), 0.0) / scale,
+                    -min((-np.diff(rv.isf(q))).min(), 0.0) / scale)
+    assert worst == 0.0, f"steps backwards by {worst:.1e} of scale"
+
+
+@ignore_runtime_warnings
+def test_F4_isf_shapes_and_body_agree_with_ppf():
+    """Array-valued shapes broadcast like the other methods, and above the
+    tails isf(q) is still ppf(1 - q)."""
+    _d = bounded_lognorm2_gen()
+    cs = np.array([0.2, 0.5, 0.8, 0.5])
+    ss = np.array([0.05, 0.1, 0.2, 0.1])
+    qg = np.array([[1e-20], [1e-5], [0.2]])
+    A = _d.isf(qg, cs, ss)
+    ok = A.shape == (3, 4) and all(
+        np.array_equal(A[:, j], _d.isf(qg[:, 0], cs[j], ss[j]))
+        for j in range(4))
+    rv = _d.from_bounds(5, 10, -5, 20)
+    qb = np.linspace(0.01, 0.99, 25)
+    ok &= np.array_equal(rv.isf(qb), rv.ppf(1 - qb))
+    assert ok
+
+
+# ---------------------------------------------------------------------------
+# SUITE G -- 0.2.0: fit_bounds (bounds-form fitting with fixed parameters)
+#
+# fit_bounds restores the original notebook's fit options: MLE or least
+# squares on the empirical cdf, with any of mode, sigma, lower, upper held
+# fixed. It is checked against independent fits rather than gold numbers:
+# scipy's own MLE (fit) and scipy.optimize.curve_fit.
+#
+# Mutation-checked (Nov 2026): each change below makes the listed tests fail --
+#   MLE objective sign flipped                  -> G1, G2, G4b, G4c
+#   ecdf default 'step' instead of 'midpoint'   -> G3, G6
+#   covariance s^2 = SSR / m (not m - p)        -> G3
+#   free bounds not kept outside a fixed mode   -> G4c (G4b still passes:
+#     the penalty on invalid trial points steers the optimizer back)
+# ---------------------------------------------------------------------------
+from scipy.optimize import curve_fit                     # noqa: E402
+
+G_TRUE = (75, 5, 70, 100)
+
+
+@functools.cache
+def _g_data(n):
+    return bounded_lognorm2_gen().from_bounds(*G_TRUE).rvs(
+        size=n, random_state=1)
+
+
+@ignore_runtime_warnings
+def test_G1_mle_all_free_matches_native_fit():
+    _d = bounded_lognorm2_gen()
+    data = _g_data(3000)
+    f = _d.fit_bounds(data)
+    p4 = _d.fit(data)
+    nat = _d.to_bounds(*p4)
+    assert f.success and f.method == 'MLE' and f.cov is None
+    assert f.nnlf <= _d.nnlf(p4, data) + 1e-6, (f.nnlf, _d.nnlf(p4, data))
+    assert np.allclose(tuple(f), nat, rtol=1e-4), (tuple(f), nat)
+
+
+@ignore_runtime_warnings
+def test_G2_mle_bounds_fixed_at_least_as_good_as_native():
+    _d = bounded_lognorm2_gen()
+    data = _g_data(3000)
+    f = _d.fit_bounds(data, flower=70, fupper=100)
+    c0, s0, loc0, sc0 = _d.bounds_to_shapes(*G_TRUE)
+    c2, s2, _, _ = _d.fit(data, floc=loc0, fscale=sc0)
+    nat = _d.to_bounds(c2, s2, loc0, sc0)
+    assert (f.lower, f.upper) == (70.0, 100.0) and f.free == ('mode', 'sigma')
+    assert f.nnlf <= _d.nnlf((c2, s2, loc0, sc0), data) + 1e-9
+    assert np.allclose(tuple(f)[:2], nat[:2], rtol=1e-3), (tuple(f), nat)
+
+
+@ignore_runtime_warnings
+def test_G3_lsq_matches_curve_fit():
+    """Same optimum and the same pcov as scipy.optimize.curve_fit on the
+    midpoint empirical cdf, in the bounds parametrization."""
+    _d = bounded_lognorm2_gen()
+    data = _g_data(3000)
+    g = _d.fit_bounds(data, 'LSQ', flower=70)
+    x, cnt = np.unique(data, return_counts=True)
+    F = (np.cumsum(cnt) - cnt / 2) / data.size
+
+    def model(x, mode, sigma, upper):
+        return _d.cdf(x, *_d.bounds_to_shapes(mode, sigma, 70, upper))
+
+    popt, pcov = curve_fit(model, x, F, p0=[g.mode, g.sigma, g.upper])
+    ours = g.cov[np.ix_([0, 1, 3], [0, 1, 3])]
+    rel = np.abs(ours - pcov) / np.sqrt(np.outer(np.diag(pcov),
+                                                 np.diag(pcov)))
+    assert np.allclose([g.mode, g.sigma, g.upper], popt, rtol=1e-7)
+    assert rel.max() < 1e-4, f"cov rel diff {rel.max():.1e}"
+    assert np.allclose(g.stderr, np.sqrt(np.diag(g.cov)))
+
+
+@ignore_runtime_warnings
+@pytest.mark.parametrize("fixed", [
+    {'flower': 70.0},
+    {'fmode': 75.0, 'flower': 70.0},
+    {'fsigma': 5.0},
+    {'flower': 70.0, 'fupper': 100.0},
+], ids=lambda d: "+".join(d))
+def test_G4_fixed_parameters_held_exactly(fixed):
+    _d = bounded_lognorm2_gen()
+    data = _g_data(500)
+    g = _d.fit_bounds(data, 'LSQ', **fixed)
+    names = {'fmode': 'mode', 'fsigma': 'sigma', 'flower': 'lower',
+             'fupper': 'upper'}
+    for k, v in fixed.items():
+        assert getattr(g, names[k]) == v
+        i = ('mode', 'sigma', 'lower', 'upper').index(names[k])
+        assert np.all(g.cov[i] == 0) and np.all(g.cov[:, i] == 0)
+    assert set(g.free) == {'mode', 'sigma', 'lower', 'upper'} - {
+        names[k] for k in fixed}
+    assert g.lower < g.mode < g.upper and g.sigma > 0
+    assert g.lower < data.min() and g.upper > data.max()
+
+
+@ignore_runtime_warnings
+def test_G4b_fixed_mode_below_all_the_data():
+    """A mode almost on the lower bound can lie below every sample. A free
+    lower bound must then stay below the fixed mode, not just below the
+    data."""
+    _d = bounded_lognorm2_gen()
+    data = _d.from_bounds(1e-6, 1, 0, 10).rvs(size=200, random_state=2)
+    assert data.min() > 1e-6                       # the premise
+    for method in ('LSQ', 'MLE'):
+        # The upper bound is fixed too: with the mode this close to 0, a
+        # sample says almost nothing about it (see G4c).
+        g = _d.fit_bounds(data, method, fmode=1e-6, fupper=10)
+        assert g.success and g.mode == 1e-6, (method, g, g.message)
+        assert g.lower < 1e-6 < data.min() and g.upper > data.max()
+
+
+def test_G4c_runaway_parameters_reported_as_failure():
+    """Two models the data cannot support, each stopped at a cap and
+    reported: a fixed mode well below data drawn around 75 (sigma runs
+    away), and a free upper bound for a mode almost on the lower bound,
+    which a sample barely constrains (this case also once crashed when the
+    mode rounded onto the lower bound)."""
+    _d = bounded_lognorm2_gen()
+    for method in ('LSQ', 'MLE'):
+        with pytest.warns(RuntimeWarning, match="sigma ran away"):
+            g = _d.fit_bounds(_g_data(500), method, fmode=65.0)
+        assert not g.success and g.mode == 65.0
+    data = _d.from_bounds(1e-6, 1, 0, 10).rvs(size=200, random_state=2)
+    for method in ('LSQ', 'MLE'):
+        # (LSQ runs the upper bound away, MLE sigma: either is a failure.)
+        with pytest.warns(RuntimeWarning, match="ran away toward its cap"):
+            g = _d.fit_bounds(data, method)
+        assert not g.success
+
+
+@ignore_runtime_warnings
+def test_G5_lsq_recovers_truth():
+    g = bounded_lognorm2_gen().fit_bounds(_g_data(3000), 'LSQ', flower=70)
+    assert abs(g.mode - 75) < 0.2 and abs(g.sigma / 5 - 1) < 0.05 \
+        and abs(g.upper - 100) < 1.0, tuple(g)
+
+
+@ignore_runtime_warnings
+def test_G6_step_ecdf_is_the_original_and_pulls_upper_down():
+    """'step' puts the largest value at ecdf = 1 (as the original fit did),
+    which drags the fitted upper bound toward max(data)."""
+    from bounded_lognorm._fit import _ecdf
+    data = np.array([3.0, 1.0, 2.0, 2.0])
+    x, Fs = _ecdf(data, 'step')
+    _, Fm = _ecdf(data, 'midpoint')
+    assert np.array_equal(x, [1, 2, 3])
+    assert np.allclose(Fs, [0.25, 0.75, 1.0])
+    assert np.allclose(Fm, [0.125, 0.5, 0.875])
+    _d = bounded_lognorm2_gen()
+    data = _g_data(500)
+    up_m = _d.fit_bounds(data, 'LSQ', flower=70).upper
+    up_s = _d.fit_bounds(data, 'LSQ', flower=70, ecdf='step').upper
+    assert data.max() < up_s < up_m, (data.max(), up_s, up_m)
+
+
+@pytest.mark.parametrize("kwargs, data_ok", [
+    ({'flower': 72.0}, True),          # fixed lower above some data
+    ({'fupper': 80.0}, True),          # fixed upper below some data
+    ({'fmode': 60.0, 'flower': 65.0}, True),     # mode outside fixed bounds
+    ({'fsigma': 0.0}, True),
+    ({'fmode': 75, 'fsigma': 5, 'flower': 70, 'fupper': 100}, True),
+    ({'method': 'MM'}, True),
+    ({}, False),                       # one distinct value
+], ids=["lower-in-data", "upper-in-data", "mode-outside", "sigma-0",
+        "all-fixed", "bad-method", "constant-data"])
+def test_G7_fit_bounds_rejects_bad_input(kwargs, data_ok):
+    _d = bounded_lognorm2_gen()
+    data = _g_data(500) if data_ok else np.full(10, 3.0)
+    with pytest.raises(ValueError):
+        _d.fit_bounds(data, **kwargs)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-rs"] + sys.argv[1:]))

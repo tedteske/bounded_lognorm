@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may change the API.
 
+## Unreleased (0.2.0)
+
+- **Tail quantiles.** `isf` is now computed from the upper tail itself instead of scipy's `ppf(1 - q)`, and `ppf` keeps its accuracy deep in the lower tail. Both were wrong by more than 100% below q ~ 1e-9; they now hold their accuracy relative to q down to ~1e-30 (worst ~3e-3 at `'fast'`, 2e-4 `'balanced'`, 2e-5 `'precise'`, 6e-11 `'exact'`). Nothing changes above q = 1e-3, and `rvs` is unchanged.
+- **`fit_bounds`**: fitting in the (mode, sigma, lower, upper) form, by MLE or least squares on the empirical CDF, with any parameters held fixed, as the original notebook's `fit` allowed. Least squares also returns curve_fit's covariance. Fits whose sigma or a bound runs away are reported as failures.
+- `CITATION.cff`; README badges and sections on fitting, tails and citing.
+- ATTRIBUTION.md: Wang et al. DOI verified (10.3141/2315-07).
+
 ## 0.1.0 (2026-11-01)
 
 First release on PyPI, as `bounded-lognorm`.
