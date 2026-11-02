@@ -1,6 +1,6 @@
 # BL — Porting the Piecewise Bounded Lognormal into the Package (Phase 5)
 
-**Status:** implemented on top of master after PR #18 (`c6cc530`, Nov 2026), released in 0.2.0. Full test suite: 693 passed, 18 skipped (Suite B, which needs the original BL2), on Python 3.13 with the latest NumPy and SciPy and on Python 3.10 with NumPy 1.23.5 and SciPy 1.9.3. Suites A–G pass unchanged, gold values included.
+**Status:** released. `bounded-lognorm` 0.2.0 was published to PyPI on 2 Nov 2026 from tag `v0.2.0` (merge commit `d0684fa` of PR #19); see §11. Implemented on top of master after PR #18 (`c6cc530`). Full test suite: 693 passed, 18 skipped (Suite B, which needs the original BL2), on Python 3.13 with the latest NumPy and SciPy and on Python 3.10 with NumPy 1.23.5 and SciPy 1.9.3. Suites A–G pass unchanged, gold values included.
 
 **Epistemic labels**, as in the earlier phase notes: *Proof* = a complete argument. *Numerical* = measured against an independent 50-digit mpmath model of BL (§7), or against the original notebook code; true for the cases tested, not a theorem.
 
@@ -148,3 +148,12 @@ The other tests are property checks rather than guards on one code path: the def
 - As mode → a bound the mass need not follow the mode (as for BL2; user-facing note).
 - Raw moments of order n ≥ ~6 use the quadrature fallback in part of the parameter space (§3); accurate (≤ 6e-13), but not closed form there.
 - The 100m-sprints notebook still imports the notebook's instance; updating it is Phase 6.
+
+## 11. Release record: 0.2.0 (Numerical)
+
+- **CI on PR #19:** all 10 jobs passed (Ubuntu with Python 3.10–3.15 on the latest dependencies, Python 3.10 on NumPy 1.23.5 and SciPy 1.9.3, macOS and Windows on 3.13, and the build-and-check job). The macOS job first sat queued for 15 minutes without a runner and was cancelled with no steps run; the re-run passed. The same 10 jobs passed again on the merge commit `d0684fa`.
+- **TestPyPI dry run:** the manually triggered publish run on the PR branch built the wheel and sdist, passed `twine check --strict` and the full suite against the built wheel, and uploaded both with digital attestations. In Google Colab (Python 3.13, Colab's own NumPy and SciPy), installing 0.2.0 from TestPyPI gave version 0.2.0 from the installed location, and BL's mean (5.849409133600799), entropy (2.733654201134262) and isf(1e-20) (19.74541097177343) and BL2's mean (5.872972571882167) for mode 5, σ 10 on (−5, 20) all agreed with the 50-digit reference to every printed digit. The full suite from the TestPyPI sdist, run against that install, gave 693 passed, 18 skipped. (`pip download --no-binary :all:` needs `--extra-index-url https://pypi.org/simple/` beside the TestPyPI index, so that it can fetch the build backend, hatchling, to read the sdist's metadata.)
+- **PyPI release:** GitHub release `v0.2.0` at `d0684fa`; publish run #4 passed its tag check and the suite against the built wheel, waited for approval, and uploaded. https://pypi.org/project/bounded-lognorm/0.2.0/ A second manual run (#5) on master, started after the release, published to TestPyPI only, as manual runs do; its upload was byte-identical to the dry run's, so TestPyPI accepted it without change.
+- **Check after release:** `pip install bounded-lognorm==0.2.0` into a clean Python 3.12 environment gave 0.2.0 and the same four values to every printed digit, and `from bounded_lognorm import bounded_lognorm` raised the migration ImportError.
+- **Zenodo:** the GitHub integration was enabled for the repository before the release, so the release was archived with a DOI: ⟨DOI⟩.
+
