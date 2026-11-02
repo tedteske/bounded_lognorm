@@ -3,6 +3,7 @@
 [![PyPI](https://img.shields.io/pypi/v/bounded-lognorm)](https://pypi.org/project/bounded-lognorm/)
 [![Python versions](https://img.shields.io/pypi/pyversions/bounded-lognorm)](https://pypi.org/project/bounded-lognorm/)
 [![tests](https://github.com/tedteske/bounded_lognorm/actions/workflows/tests.yml/badge.svg)](https://github.com/tedteske/bounded_lognorm/actions/workflows/tests.yml)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23897348.svg)](https://doi.org/10.5281/zenodo.23897348)
 
 Bounded lognormal continuous probability distributions for `scipy.stats`.
 
@@ -157,7 +158,7 @@ Derivations and verification notes:
 
 ## Citing
 
-If you use this package in published work, please cite it. GitHub's "Cite this repository" button gives APA and BibTeX from [CITATION.cff](https://github.com/tedteske/bounded_lognorm/blob/master/CITATION.cff).
+If you use this package in published work, please cite it. GitHub's "Cite this repository" button gives APA and BibTeX from [CITATION.cff](https://github.com/tedteske/bounded_lognorm/blob/master/CITATION.cff). Releases are archived on Zenodo: [10.5281/zenodo.23897348](https://doi.org/10.5281/zenodo.23897348) cites all versions (and resolves to the latest); each version also has its own DOI, listed on that record, for citing the exact release you used (0.2.0: [10.5281/zenodo.23897349](https://doi.org/10.5281/zenodo.23897349)).
 
 ## Attribution and license
 
