@@ -1,0 +1,62 @@
+# Executes the use-case notebooks top to bottom, as Colab would: each
+# notebook installs bounded-lognorm from PyPI itself (%pip install, pinned),
+# so this checks the notebooks against the released package, not this
+# checkout. Bootstraps and simulations run at reduced size to keep the job
+# short; the committed notebooks carry the full-size outputs.
+#
+# Not part of the test matrix (tests.yml): runs by hand, and when the
+# notebooks or this workflow change. The deprecated development notebooks
+# in notebooks/ are not executed.
+
+name: notebooks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ["notebooks/**", ".github/workflows/notebooks.yml"]
+  push:
+    branches: [master]
+    paths: ["notebooks/**", ".github/workflows/notebooks.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  execute:
+    name: Execute the use-case notebooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the notebook runner and Colab's preinstalled libraries
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install nbclient nbformat ipykernel numpy scipy pandas matplotlib
+
+      - name: Execute (reduced sizes)
+        working-directory: notebooks
+        env:
+          BOOTSTRAP_B: "20"
+          REPEATS: "10"
+          MC_N: "20000"
+        run: |
+          python - <<'EOF'
+          import nbformat, nbclient
+          for name in ("Applications_100m_Sprints.ipynb",
+                       "Applications_Monte_Carlo.ipynb"):
+              nb = nbformat.read(name, as_version=4)
+              nbclient.NotebookClient(
+                  nb, timeout=1800, kernel_name="python3",
+                  resources={"metadata": {"path": "."}}).execute()
+              print("executed", name)
+          EOF

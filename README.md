@@ -141,11 +141,20 @@ pytest
 
 The suite checks BL2 against independent 30-, 40- and 50-digit mpmath reference values at every precision setting, and BL against an independent 50-digit model and against the original notebook implementation.
 
+## Use cases
+
+Two notebooks run top to bottom in Google Colab, installing the package from PyPI. Both use BL and BL2 side by side, always labelled:
+
+- [What are the fastest possible 100m sprint times?](https://github.com/tedteske/bounded_lognorm/blob/master/notebooks/Applications_100m_Sprints.ipynb) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tedteske/bounded_lognorm/blob/master/notebooks/Applications_100m_Sprints.ipynb) Fitting a bounded distribution to Olympic sprint speeds and reading the upper bound as the best possible runner, with `fit_bounds` and bootstrap refits.
+- [Monte Carlo with bounded lognormals](https://github.com/tedteske/bounded_lognorm/blob/master/notebooks/Applications_Monte_Carlo.ipynb) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/tedteske/bounded_lognorm/blob/master/notebooks/Applications_Monte_Carlo.ipynb) A schedule roll-up from three-point estimates, and an input whose most likely value sits near a bound: where the bound matters, where BL vs BL2 does and does not.
+
+If you ran Monte Carlo simulations with the original notebook's BL, re-run them: its `rvs` returned draws grouped by side of the mode, which correlates independent variables when they are combined draw by draw (the second notebook shows the effect).
+
 ## Background and history
 
 The original bounded lognormal (BL) is piecewise: a lognormal below the mode and a mirrored, rescaled lognormal above it. It has closed-form CDF and quantile functions, but its density is only C¹ at the mode, where the second derivative jumps. BL2 replaces the two pieces with their geometric mean, which is smooth everywhere. The two are different distributions, not two versions of one, so results computed with BL will not reproduce with BL2.
 
-Version 0.1.0 shipped BL2 only. Since 0.2.0 the package also ships BL, ported from the [`bounded_lognorm.ipynb`](https://github.com/tedteske/bounded_lognorm/blob/master/bounded_lognorm.ipynb) notebook with the same conventions as BL2. Code written against the notebook's `bounded_lognorm` instance needs one change: `bounded_lognorm.pdf(x, mode, sigma, lower, upper)` becomes `bl.from_bounds(mode, sigma, lower, upper).pdf(x)`; the [Phase 5 note](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase5_bl_port.md) has the full migration guide.
+Version 0.1.0 shipped BL2 only. Since 0.2.0 the package also ships BL, ported from the [`bounded_lognorm.ipynb`](https://github.com/tedteske/bounded_lognorm/blob/master/notebooks/bounded_lognorm.ipynb) notebook with the same conventions as BL2. Code written against the notebook's `bounded_lognorm` instance needs one change: `bounded_lognorm.pdf(x, mode, sigma, lower, upper)` becomes `bl.from_bounds(mode, sigma, lower, upper).pdf(x)`; the [Phase 5 note](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase5_bl_port.md) has the full migration guide.
 
 Derivations and verification notes:
 
@@ -155,13 +164,14 @@ Derivations and verification notes:
 - [Phase 4: packaging](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase4_packaging.md)
 - [0.2.0: tail quantiles and bounds-form fitting](https://github.com/tedteske/bounded_lognorm/blob/master/docs/v0.2_tails_and_fit_bounds.md)
 - [Phase 5: porting BL into the package](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase5_bl_port.md)
+- [Phase 6: use cases, and the 0.2.1 fit_bounds fix](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase6_use_cases.md)
 
 ## Citing
 
-If you use this package in published work, please cite it. GitHub's "Cite this repository" button gives APA and BibTeX from [CITATION.cff](https://github.com/tedteske/bounded_lognorm/blob/master/CITATION.cff). Releases are archived on Zenodo: [10.5281/zenodo.23897348](https://doi.org/10.5281/zenodo.23897348) cites all versions (and resolves to the latest); each version also has its own DOI, listed on that record, for citing the exact release you used (0.2.0: [10.5281/zenodo.23897349](https://doi.org/10.5281/zenodo.23897349)).
+If you use this package in published work, please cite it. GitHub's "Cite this repository" button gives APA and BibTeX from [CITATION.cff](https://github.com/tedteske/bounded_lognorm/blob/master/CITATION.cff). Releases are archived on Zenodo: [10.5281/zenodo.23897348](https://doi.org/10.5281/zenodo.23897348) cites all versions (and resolves to the latest); each version also has its own DOI, listed on that record, for citing the exact release you used (0.2.1: [10.5281/zenodo.23898464](https://doi.org/10.5281/zenodo.23898464); 0.2.0: [10.5281/zenodo.23897349](https://doi.org/10.5281/zenodo.23897349)).
 
 ## Attribution and license
 
-The bounded lognormal distributions and their original implementations are by Ted Teske (2020–2024). The 2026 optimization, verification, scipy conformance and BL port were done by Ted Teske with assistance from Claude (Anthropic). See [ATTRIBUTION.md](https://github.com/tedteske/bounded_lognorm/blob/master/ATTRIBUTION.md) for the detailed breakdown and references.
+The bounded lognormal distributions and their original implementations are by Ted Teske (2020–2024). The 2026 optimization, verification, scipy conformance, BL port and use cases were done by Ted Teske with assistance from Claude (Anthropic). See [ATTRIBUTION.md](https://github.com/tedteske/bounded_lognorm/blob/master/ATTRIBUTION.md) for the detailed breakdown and references.
 
 MIT License. See [LICENSE](https://github.com/tedteske/bounded_lognorm/blob/master/LICENSE).
