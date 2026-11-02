@@ -84,5 +84,5 @@ A version can be uploaded to an index only once. If the TestPyPI dry run reveals
 ## 9. Still open
 
 - From Phase 3: the mass not following the mode as mode → lower. (`fit_bounds` and the deep-tail `isf` are resolved for 0.2.0; see `docs/v0.2_tails_and_fit_bounds.md`.)
-- `Applications_100m_Sprints.ipynb` imports `from bounded_lognorm import bounded_lognorm`, the piecewise BL, which this package does not provide. It ran against a module exported from the original notebook. The BL port is planned for 0.2.0.
+- `Applications_100m_Sprints.ipynb` imports `from bounded_lognorm import bounded_lognorm`, the piecewise BL, which this package does not provide. It ran against a module exported from the original notebook. *BL is ported in 0.2.0 as `bl` (`docs/phase5_bl_port.md`); the notebook's import now raises an ImportError with the migration, and updating the notebook is Phase 6.*
 - ~~The Wang et al. DOI in ATTRIBUTION.md is still unverified.~~ Verified for 0.2.0: 10.3141/2315-07.

@@ -3,14 +3,15 @@ message: "If you use this software, please cite it using the metadata from this 
 type: software
 title: "bounded-lognorm: bounded lognormal distributions for scipy.stats"
 abstract: >-
-  The bounded lognormal 2 (BL2) distribution: a smooth, mode/sigma-parametrized
-  continuous distribution on a finite interval, implemented as a full
-  scipy.stats.rv_continuous subclass with a speed/precision dial.
+  Two bounded lognormal distributions, each mode/sigma-parametrized on a
+  finite interval and implemented as a full scipy.stats.rv_continuous
+  subclass: BL2, a smooth geometric-mean form with a speed/precision dial,
+  and BL, the original piecewise form, entirely in closed form.
 authors:
   - family-names: Teske
     given-names: Ted
-version: 0.1.0
-date-released: "2026-11-01"
+version: 0.2.0
+date-released: "2026-11-02"
 license: MIT
 repository-code: "https://github.com/tedteske/bounded_lognorm"
 url: "https://pypi.org/project/bounded-lognorm/"
