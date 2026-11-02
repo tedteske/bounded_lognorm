@@ -1,5 +1,9 @@
 # bounded-lognorm
 
+[![PyPI](https://img.shields.io/pypi/v/bounded-lognorm)](https://pypi.org/project/bounded-lognorm/)
+[![Python versions](https://img.shields.io/pypi/pyversions/bounded-lognorm)](https://pypi.org/project/bounded-lognorm/)
+[![tests](https://github.com/tedteske/bounded_lognorm/actions/workflows/tests.yml/badge.svg)](https://github.com/tedteske/bounded_lognorm/actions/workflows/tests.yml)
+
 A bounded lognormal continuous probability distribution for `scipy.stats`.
 
 The **bounded lognormal** is derived from the [lognormal distribution](https://en.wikipedia.org/wiki/Log-normal_distribution). Unlike the normal and lognormal, its domain has both a lower and an upper bound, and it may be symmetric or skewed either way depending on its parameters. That makes it a natural fit for quantities with known limits, such as adult height, task durations with a hard deadline, or sprint times.
@@ -31,6 +35,20 @@ mode, sigma, lower, upper = bl2.to_bounds(c, s, loc, scale)
 
 bl2.from_bounds(mode=0, sigma=1)                   # None bound = unbounded on that side
 ```
+
+## Fitting in the bounds form
+
+`fit_bounds` fits mode, sigma and the bounds directly, by maximum likelihood or by least squares on the empirical CDF, with any of the four held fixed:
+
+```python
+fit = bl2.fit_bounds(sample, flower=-5)            # lower bound known, the rest fitted
+mode, sigma, lower, upper = fit
+
+fit = bl2.fit_bounds(sample, 'LSQ', fmode=5)       # least squares, mode held at 5
+fit.stderr.upper                                   # LSQ also gives a covariance (see its docstring)
+```
+
+A fit whose sigma or a bound runs off toward infinity, because the data cannot pin it down, is reported with `fit.success == False` and a warning rather than returned as if it were an answer.
 
 ## Definition
 
@@ -80,6 +98,8 @@ rv = exact.from_bounds(mode=5, sigma=10, lower=-5, upper=20)
 
 The CDF is accurate to about 1e-13 at every position, and `rvs` uses the quantile grid at every position. Frozen distributions keep their instance's setting.
 
+Far-tail quantiles keep their relative accuracy: below a tail probability of 1e-3, `ppf` (lower tail) and `isf` (upper tail) are inverted in log-probability space, so `rv.isf(1e-20)` is accurate to about 2e-4 of its probability at `'balanced'` (6e-11 at `'exact'`), down to about 1e-30.
+
 ## Testing
 
 ```
@@ -99,6 +119,11 @@ Derivations and verification notes:
 - [Phase 2: math verification and numerical fixes](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase2_math_verification.md)
 - [Phase 3: scipy.stats conformance and migration from the old API](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase3_api_conformance.md)
 - [Phase 4: packaging](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase4_packaging.md)
+- [0.2.0: tail quantiles and bounds-form fitting](https://github.com/tedteske/bounded_lognorm/blob/master/docs/v0.2_tails_and_fit_bounds.md)
+
+## Citing
+
+If you use this package in published work, please cite it. GitHub's "Cite this repository" button gives APA and BibTeX from [CITATION.cff](https://github.com/tedteske/bounded_lognorm/blob/master/CITATION.cff).
 
 ## Attribution and license
 

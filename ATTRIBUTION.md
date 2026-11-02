@@ -55,7 +55,7 @@ Checked July 2026. Changes from the original reference list:
 - **`berkeley-stat159-f17.github.io/.../trapezoid..html`** — malformed URL (doubled period) and could not be resolved. Replaced with the NumPy/SciPy documentation, which is what the code actually uses.
 - **`appliedbusinesseconomics.com/files\gvsplndrn01.pdf`** — could not be resolved; the backslash is also not a valid URL path separator. Recommend removing it or replacing it with the specific claim it supported.
 - **Towards Data Science / Medium** — unstable and paywalled; retained only as an informal pointer, not a load-bearing citation.
-- **Wang et al.** — the ResearchGate link is not canonical. Cite the *Transportation Research Record* article of record. I have **not** filled in a DOI, because I could not verify one and will not guess at it; please look it up.
+- **Wang et al.** — the ResearchGate link is not canonical; cite the *Transportation Research Record* article of record. DOI 10.3141/2315-07 verified November 2026 against two independent records (Monash University research portal and TRB's TRID database), which agree on the title, all seven authors, issue 2315 (2012) and pages 66–72.
 
 ### References
 
@@ -72,7 +72,7 @@ Checked July 2026. Changes from the original reference list:
 9. Inverse transform sampling. https://en.wikipedia.org/wiki/Inverse_transform_sampling
 10. NIST/SEMATECH e-Handbook of Statistical Methods, §1.3.5.11 (measures of skewness and kurtosis). https://www.itl.nist.gov/div898/handbook/eda/section3/eda35b.htm
 11. Raiford, T. E. "Skewness of Combined Distributions." *Journal of the American Statistical Association*, vol. 37, no. 219, 1942, pp. 391–393. JSTOR, https://www.jstor.org/stable/2279009
-12. Wang, Y., et al. "Speed Modeling and Travel Time Estimation Based on Truncated Normal and Lognormal Distributions." *Transportation Research Record*, no. 2315, 2012, pp. 66–72. [DOI to be verified.]
+12. Wang, Y., Dong, W., Zhang, L., Chin, D., Papageorgiou, M., Rose, G., and Young, W. "Speed Modeling and Travel Time Estimation Based on Truncated Normal and Lognormal Distributions." *Transportation Research Record*, no. 2315, 2012, pp. 66–72. https://doi.org/10.3141/2315-07
 13. Ford, C. E., and McLaren, R. A. *Methods for Obtaining Distributions of Uranium Occurrence from Estimates of Geologic Features.* Union Carbide Corp. for the U.S. Dept. of Energy, 1980. OSTI, https://www.osti.gov/biblio/5121047
 
 **Reparametrization (mode, σ → μ_N, σ_N)**
