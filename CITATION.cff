@@ -10,7 +10,7 @@ abstract: >-
 authors:
   - family-names: Teske
     given-names: Ted
-version: 0.2.0
+version: 0.2.1
 date-released: "2026-11-02"
 license: MIT
 # Concept DOI: all versions, always resolving to the latest. Each release's

@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may change the API.
 
+## 0.2.1 (unreleased)
+
+- **`fit_bounds` reports a bound that collapses onto the data.** With least squares, a free bound can converge onto the sample's smallest or largest value: the fit keeps improving as it approaches, as for the men's 100m speeds with the lower bound fixed at 0. 0.2.0 returned such fits with `success = True` and a standard error of ~0 for the bound, so a covariance interval was spuriously narrow. They now have `success = False`, a RuntimeWarning naming the bound, and NaN in that bound's `.cov` rows and columns and `.stderr`. The test is whether moving the bound 1000 times closer to the edge worsens the fit; every genuine fit examined worsens by 1e-2 or more and every collapse by 0 or less (`docs/v0.2_tails_and_fit_bounds.md` §2.1). Nothing else changes.
+
 ## 0.2.0 (2026-11-02)
 
 - **BL, the piecewise bounded lognormal, joins the package** as `bl` (class `bounded_lognorm_gen`, module `bounded_lognorm._bl`), ported from the original notebook with BL2's conventions: standard form on [0, 1] with shapes `c` and `s`, `loc`/`scale`, the `from_bounds` / `bounds_to_shapes` / `to_bounds` bridge, `fit` and `fit_bounds`. Everything is in closed form: `pdf`, `cdf`, `sf`, `ppf`, `isf` (tails relative-accurate to ~1e-300), `logpdf`/`logcdf`/`logsf`, moments of any order, and entropy. **BL and BL2 are different distributions**; with the same parameters their CDFs differ by 0.03–0.05 typically and up to ~0.26 with the mode near a bound.

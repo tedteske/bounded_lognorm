@@ -27,7 +27,7 @@ Attribution (see ATTRIBUTION.md for the full, tiered breakdown and references):
 from ._bl2 import bounded_lognorm2_gen, bl2, PRECISION_DIAL
 from ._bl import bounded_lognorm_gen, bl
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = ["bounded_lognorm2_gen", "bl2", "bounded_lognorm_gen", "bl",
            "PRECISION_DIAL", "__version__"]

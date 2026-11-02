@@ -20,6 +20,13 @@ PARAMS = ('mode', 'sigma', 'lower', 'upper')
 
 BoundsParams = namedtuple('BoundsParams', PARAMS)
 
+# 0.2.1: a free bound is reported as collapsed onto the data when moving it
+# COLLAPSE_FACTOR times closer to the edge it is held outside of (the
+# sample extreme, or a fixed mode) does not worsen the objective by more
+# than COLLAPSE_RTOL relative: the fit is then not an interior optimum.
+COLLAPSE_FACTOR = 1e3
+COLLAPSE_RTOL = 1e-9
+
 
 class BoundsFit(namedtuple('BoundsFit', PARAMS)):
     """
@@ -32,7 +39,8 @@ class BoundsFit(namedtuple('BoundsFit', PARAMS)):
       method   : 'MLE' or 'LSQ'
       free     : names of the parameters that were fitted (not fixed)
       cov      : LSQ only, 4x4 covariance of (mode, sigma, lower, upper),
-                 zero in the rows and columns of fixed parameters; None for
+                 zero in the rows and columns of fixed parameters, NaN in
+                 those of a bound that collapsed onto the data; None for
                  MLE. See fit_bounds for what it does and does not mean.
       stderr   : BoundsParams of standard errors, sqrt(diag(cov)); None
                  for MLE
@@ -177,6 +185,23 @@ def fit_bounds(dist, data, method='MLE', *, fmode=None, fsigma=None,
     theta_cap = np.array([cap[k] for k in free])
     theta0 = np.minimum(theta0, theta_cap - 1.0)
 
+    # The other way a bound can go unidentified: collapsing onto the data.
+    # A free bound is kept strictly outside the data (and a fixed mode), but
+    # the optimum can still be the edge of that region: the fit improves all
+    # the way as the bound approaches the sample extreme, and the optimizer
+    # stops a hair outside it. The data then do not place the bound beyond
+    # the extreme, and the delta-method covariance is zero by construction
+    # (d bound / d theta = exp(theta) -> 0), a spurious standard error of
+    # ~0. The test is whether the fit is an interior optimum in that bound:
+    # moving the bound COLLAPSE_FACTOR times closer to the edge (theta down
+    # by log COLLAPSE_FACTOR, the other parameters held) must make the
+    # objective worse by more than rounding. A distance threshold would not
+    # do: a genuine gap can be tiny (G4b: the true lower bound 1e-6 below a
+    # fixed mode at 1e-6, which MLE recovers), while a collapsed one is tiny
+    # too. See docs/v0.2_tails_and_fit_bounds.md, section 2.1.
+    edge = {'lower': ('min(data)' if lo_cap == dmin else 'the fixed mode'),
+            'upper': ('max(data)' if hi_cap == dmax else 'the fixed mode')}
+
     def shapes(p):
         return dist.bounds_to_shapes(*p)
 
@@ -226,11 +251,37 @@ def fit_bounds(dist, data, method='MLE', *, fmode=None, fsigma=None,
             theta = opt.x
         at_cap = [k for k, t, c in zip(free, theta, theta_cap)
                   if np.isfinite(c) and t > c - np.log(10)]
+        if method == 'MLE':
+            obj = penalized(objective, 1e300)
+        else:
+            res = penalized(lambda th: residuals_b(to_bounds(th)), None)
+
+            def obj(th):
+                r = res(th)
+                return np.inf if r is None else float(r @ r)
+        f_hat = obj(theta)
+        collapsed = []
+        for j, k in enumerate(free):
+            if k not in ('lower', 'upper'):
+                continue
+            th = theta.copy()
+            th[j] -= np.log(COLLAPSE_FACTOR)
+            f_in = obj(th)
+            if np.isfinite(f_in) and \
+                    f_in <= f_hat + COLLAPSE_RTOL * max(1.0, abs(f_hat)):
+                collapsed.append(k)
         p_hat = tuple(float(v) for v in to_bounds(theta))
         cov = _lsq_cov(lambda th: residuals_b(to_bounds(th)), to_bounds,
                        theta, free) if method == 'LSQ' else None
 
     shapes(p_hat)          # raises for an invalid fit; warns at the extremes
+    if cov is not None:
+        # No standard error for a collapsed bound; the remaining entries
+        # treat it as fixed at the data's edge (its Jacobian column is ~0).
+        for k in collapsed:
+            i = PARAMS.index(k)
+            cov[i, :] = np.nan
+            cov[:, i] = np.nan
     out = BoundsFit(*p_hat)
     out.method = method
     out.free = free
@@ -238,18 +289,25 @@ def fit_bounds(dist, data, method='MLE', *, fmode=None, fsigma=None,
     out.stderr = (BoundsParams(*np.sqrt(np.clip(np.diag(cov), 0, None)))
                   if cov is not None else None)
     out.nnlf = nnlf(p_hat)
-    out.success = bool(opt.success) and not at_cap
-    out.message = str(opt.message)
+    out.success = bool(opt.success) and not at_cap and not collapsed
+    msgs = []
     if at_cap:
-        out.message = (f"{', '.join(at_cap)} ran away toward its cap "
-                       f"(sigma above 100x, or a bound more than 1000x the "
-                       f"data range from the data): the data do not "
-                       f"identify it, or a fixed value is inconsistent with "
-                       f"them")
+        msgs.append(f"{', '.join(at_cap)} ran away toward its cap "
+                    f"(sigma above 100x, or a bound more than 1000x the "
+                    f"data range from the data): the data do not identify "
+                    f"it, or a fixed value is inconsistent with them")
+    for k in collapsed:
+        msgs.append(f"{k} collapsed onto {edge[k]}: the fit does not get "
+                    f"worse as the bound moves onto it, so the data do not "
+                    f"place the {k} bound beyond it; its standard error is "
+                    f"undefined (NaN)")
+    out.message = "; ".join(msgs) if msgs else str(opt.message)
     out.optimizer = opt
     if not out.success:
-        warnings.warn(f"fit_bounds ({method}) did not converge: "
-                      f"{out.message}", RuntimeWarning, stacklevel=3)
+        what = ("did not converge" if not opt.success
+                else "did not identify every parameter")
+        warnings.warn(f"fit_bounds ({method}) {what}: {out.message}",
+                      RuntimeWarning, stacklevel=3)
     return out
 
 

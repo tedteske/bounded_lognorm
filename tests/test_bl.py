@@ -890,6 +890,28 @@ def test_H18_fit_and_fit_bounds():
     assert fl.lower == 70.0 and abs(fl.mode - 75) < 0.5
 
 
+def test_H18b_bound_collapse_reported():
+    """0.2.1, as BL2's G4d: a free bound collapsing onto the sample extreme
+    under LSQ is a failure with a NaN standard error, for BL too."""
+    x = 10.4 * np.random.default_rng(5).beta(8, 2, 800)
+    with pytest.warns(RuntimeWarning, match="upper collapsed onto max"):
+        g = bl.fit_bounds(x, 'LSQ', flower=0.0)
+    assert not g.success and np.isnan(g.stderr.upper)
+    assert g.upper - x.max() < 1e-6 * np.ptp(x)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', RuntimeWarning)
+        m = bl.fit_bounds(x, 'MLE', flower=0.0)
+    assert m.success and m.upper - x.max() > 1e-3 * np.ptp(x)
+    # The edge can be a fixed mode: BL's likelihood is flat as the lower
+    # bound closes onto a mode fixed below all the data (BL2 recovers a
+    # genuine 1e-6 gap there, G4b, which the check must not flag).
+    data = bl2.from_bounds(1e-6, 1, 0, 10).rvs(size=200, random_state=2)
+    with pytest.warns(RuntimeWarning,
+                      match="lower collapsed onto the fixed mode"):
+        g = bl.fit_bounds(data, 'MLE', fmode=1e-6, fupper=10)
+    assert not g.success and g.stderr is None
+
+
 def test_H19_bl_is_not_bl2():
     """Same parameters, different distributions: guards against BL ever
     being aliased to (or silently computed by) BL2."""

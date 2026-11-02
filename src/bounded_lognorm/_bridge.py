@@ -140,6 +140,16 @@ class _BoundsBridge:
         regularity conditions for the inverse Fisher information do not
         clearly hold.
 
+        A fit is reported as failed (success False, a RuntimeWarning, and
+        the reason in .message) when the data do not identify a parameter:
+        sigma or a free bound running away from the data, or (since 0.2.1)
+        a free bound collapsing onto the sample extreme. The second happens
+        with LSQ when the fit keeps improving as the bound approaches the
+        smallest or largest value, e.g. data that fall off steeply near
+        their maximum with the lower bound fixed far below. The returned
+        bound is then the sample extreme, not an estimate beyond it, and
+        its .cov rows and columns and .stderr are NaN.
+
         Added in 0.2.0. For the native (c, s, loc, scale) parametrization
         and scipy's own options, use fit().
         """
