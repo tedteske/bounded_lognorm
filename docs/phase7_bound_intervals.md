@@ -92,7 +92,8 @@ Nominal 0.95. All are two-sided; the gap between the truth and the sample maximu
 **Small samples, BL, full data:**
 
 - women's LSQ-step truth, n = 50: 0.950
-- [[S2, S3, S4]]
+- women's LSQ-step truth, n = 100: 0.956
+- [[S3, S4]]
 
 At 90%, the full-data and women's truncated cases covered 0.89–0.91. The men's truncated cases covered 0.884 and 0.854.
 
@@ -171,7 +172,11 @@ Its threshold is a choice. The analysis uses the median and the upper quartile, 
 - Faster than the median (387 runs): estimate none (runs away), interval [0, 9.38] s
 - Faster than the upper quartile (190 runs): estimate none, interval [0, 9.57] s
 
-**Men, BL2:** [[BL2 men]]
+**Men, BL2:**
+
+- All data: estimate 9.62 s, interval [9.60, 9.63] s
+- Faster than the median: estimate none (runs away), interval [0, 9.43] s
+- Faster than the upper quartile: estimate none, interval [0, 9.57] s
 
 **Women (mode fixed), BL:**
 
@@ -179,7 +184,11 @@ Its threshold is a choice. The analysis uses the median and the upper quartile, 
 - Faster than the median: estimate 10.12 s, interval [0, 10.58] s
 - Faster than the upper quartile: estimate 10.31 s, interval [0, 10.63] s
 
-**Women, BL2:** [[BL2 women]]
+**Women (mode fixed), BL2:**
+
+- All data: estimate 10.67 s, interval [10.63, 10.69] s
+- Faster than the median: estimate 10.35 s, interval [0, 10.61] s
+- Faster than the upper quartile: estimate 10.44 s, interval [0, 10.65] s
 
 **Men.** Using the fast runs alone, neither family identifies a best possible time. The likelihood rises steadily as the bound moves away. The profile does rule out bounds close to the record:
 
@@ -187,7 +196,7 @@ Its threshold is a choice. The analysis uses the median and the upper quartile, 
 - 6.3 at 9.50 s
 - 4.1 at 9.40 s
 
-So 9.55 s is rejected outright (BL, median threshold).
+So 9.55 s is rejected outright (BL, median threshold; BL2's LR values are 8.3, 5.8 and 3.2 at the same times, and its near end is 9.43 s).
 
 Under the weakest-calibrated simulation (§3.2, 95% quantile 4.69), the near end would be about 9.43 s instead of 9.38 s. With only the fastest quarter, the near end is 9.57 s. Fewer runs say less, but nothing different.
 

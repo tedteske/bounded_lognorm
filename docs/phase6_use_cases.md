@@ -125,11 +125,12 @@ With 30 observations the sampling error dominates the family choice, though the 
 - **CI on PR #21:** all 10 jobs passed. The macOS job was cancelled once without running, as for 0.2.0, and passed on re-run.
 - **PyPI:** merged to master as `89a7ad2`; GitHub release `v0.2.1` published by Ted (this session cannot create releases); publish run passed and uploaded. https://pypi.org/project/bounded-lognorm/0.2.1/
 - **Check after release:** `pip install bounded-lognorm==0.2.1` into a clean Python 3.13 environment (NumPy 2.5.4, SciPy 1.18.1) gave 0.2.1, and the collapse case returned `success=False` with a NaN standard error. BL's mean (5.849409133600799), entropy (2.733654201134262) and isf(1e-20) (19.74541097177343), and BL2's mean (5.872972571882167), for mode 5, σ 10 on (−5, 20), are identical to 0.2.0's to every printed digit.
+- **Colab check of the notebooks (2026-11-02):** Ted ran both use-case notebooks top to bottom in Google Colab, installing 0.2.1 from PyPI; the results were as expected. (Recorded in Phase 7.)
 - **Zenodo:** version 0.2.1 is [10.5281/zenodo.23898464](https://doi.org/10.5281/zenodo.23898464); the concept DOI [10.5281/zenodo.23897348](https://doi.org/10.5281/zenodo.23897348) resolves to the latest.
 
 ## 7. Still open
 
-- A bound at the sample maximum has no bootstrap confidence interval. Whether to offer anything for that case (a profile-likelihood bound, say) is open; the notebooks state the limitation.
+- A bound at the sample maximum has no bootstrap confidence interval. Whether to offer anything for that case (a profile-likelihood bound, say) is open; the notebooks state the limitation. *Taken up in Phase 7 (`docs/phase7_bound_intervals.md`), which also revises the men's "at or just past the record".*
 - The women's analysis rests on fixing the mode at the sample's most frequent speed, a fragile estimate for data recorded in hundredths of a second. A better-founded choice (a smoothed mode, or MLE with the mode free) would be a substantive change to the analysis, not a migration, so it is left as noted.
 - Case A uses one sigma convention for three-point estimates. Others, such as sigma chosen so that BL's actual standard deviation is (max − min)/6, would change the absolute numbers but not the comparisons.
 - From earlier phases: as the mode approaches a bound the mass need not follow the mode (user-facing note).
