@@ -172,7 +172,6 @@ class _BoundsBridge:
                            ecdf=ecdf, truncate=truncate)
 
     def profile_bound(self, data, bound='upper', level=0.95, *,
-                      calibration='chi2', n_boot=200, random_state=None,
                       truncate=None, fmode=None, fsigma=None, flower=None,
                       fupper=None, gmode=None, gsigma=None, glower=None,
                       gupper=None, grid=None):
@@ -182,7 +181,8 @@ class _BoundsBridge:
         The bound is held at each trial value and the likelihood maximized
         over the other free parameters (fit_bounds with that bound fixed).
         The interval is the set of values whose likelihood ratio statistic
-        LR(b) = 2 [nnlf_profile(b) - nnlf_max] is at most a critical value.
+        LR(b) = 2 [nnlf_profile(b) - nnlf_max] is at most the chi-squared(1)
+        quantile at `level` (3.84 for 95%).
 
         Parameters
         ----------
@@ -192,14 +192,6 @@ class _BoundsBridge:
             'upper').
         level : float
             Confidence level, default 0.95.
-        calibration : 'chi2' or 'bootstrap'
-            'chi2' (default): the critical value is the chi-squared(1)
-            quantile (Wilks). 'bootstrap': the `level` quantile of LR at
-            the fitted bound over `n_boot` samples drawn from the fitted
-            model (same size, same window, same fixed parameters). See
-            Notes for when each is calibrated.
-        n_boot, random_state :
-            For calibration='bootstrap'. Each replicate costs two fits.
         truncate, fmode, fsigma, flower, fupper, gmode, gsigma, glower,
         gupper :
             As in fit_bounds (MLE). The same window and fixed values apply
@@ -214,9 +206,9 @@ class _BoundsBridge:
             .interval (lo, hi) in data units; an end the data cannot close
             is +-inf (the likelihood never falls far enough). .estimate is
             the maximum-likelihood bound (+-inf when it ran away). Also
-            .fit (the full BoundsFit), .critical, .level, .calibration,
-            .profile (bound values and LR, sorted, every point
-            evaluated), .lr_boot (bootstrap only), .success, .message.
+            .fit (the full BoundsFit), .critical, .level, .profile (bound
+            values and LR, sorted, every point evaluated), .success,
+            .message.
 
         Notes
         -----
@@ -226,13 +218,16 @@ class _BoundsBridge:
 
         A bound is a support parameter, so Wilks' theorem is not
         automatic. For BL and BL2 the density vanishes faster than any
-        power at each bound, which puts them in the regular case of Smith
-        (1985); in simulation (docs/phase7_bound_intervals.md) the chi2
-        interval held its level at the sprints' sample sizes, two-sided
-        and with the bound well identified. One-sided, the limit toward
-        the data was missed more often than nominal. Where the bound is
-        weakly identified (few data, or a truncated likelihood), check
-        with calibration='bootstrap'.
+        power at each bound, which argues for the regular case (Smith
+        1985). In simulation from both families (docs/
+        phase7_bound_intervals.md), two-sided 95% intervals covered the
+        truth 92-96% of the time at the sprints' sample sizes (n ~ 700),
+        full data or truncated, and 95% at n = 50 and 100 for one shape,
+        but only 83-88% at n = 100 for another, with the bound close to
+        the data and sigma wide. Misses are lopsided: the interval stops short on
+        the data's side more often than it overshoots, so do not halve the
+        level for a one-sided limit. A parametric-bootstrap critical value
+        did no better in any case checked, so none is offered.
 
         The profile is assumed to fall away on each side of the maximum
         without a second dip; the search steps outward in the log of the
@@ -241,9 +236,7 @@ class _BoundsBridge:
         fit_bounds' cap on a bound's distance from the data (10^4 times
         the data range).
         """
-        return _profile_bound(self, data, bound, level,
-                              calibration=calibration, n_boot=n_boot,
-                              random_state=random_state, truncate=truncate,
+        return _profile_bound(self, data, bound, level, truncate=truncate,
                               fmode=fmode, fsigma=fsigma, flower=flower,
                               fupper=fupper, gmode=gmode, gsigma=gsigma,
                               glower=glower, gupper=gupper, grid=grid)

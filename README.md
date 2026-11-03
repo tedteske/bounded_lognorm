@@ -65,7 +65,7 @@ r = bl2.profile_bound(sample, 'upper', flower=-5)  # 95% by default
 r.estimate, r.interval                             # an end the data cannot close is inf
 ```
 
-`fit_bounds(..., truncate=(t, None))` and `profile_bound(..., truncate=(t, None))` fit by the likelihood conditional on the data above `t`, so that data below it (outliers far from the bound of interest, say) have no influence. A bound is a support parameter, and when the data say little about it the interval can be open on the far side; `calibration='bootstrap'` replaces the chi-squared critical value by a parametric-bootstrap one. When each is calibrated, and the simulation evidence, are in [`docs/phase7_bound_intervals.md`](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase7_bound_intervals.md).
+`fit_bounds(..., truncate=(t, None))` and `profile_bound(..., truncate=(t, None))` fit by the likelihood conditional on the data above `t`, so that data below it (outliers far from the bound of interest, say) have no influence. A bound is a support parameter, and when the data say little about it the interval can be open on the far side. The critical value is chi-squared(1); how well that is calibrated, by simulation from both families (well at a few hundred observations, short of 95% at 100 when the bound is close to the data), is in [`docs/phase7_bound_intervals.md`](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase7_bound_intervals.md).
 
 `bl` has the same `from_bounds`, `fit`, `fit_bounds`, `profile_bound`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
 

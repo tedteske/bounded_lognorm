@@ -16,8 +16,7 @@ Mutation-checked (Nov 2026): each change below makes the listed tests fail --
   chi-squared critical value with 2 degrees of freedom   -> P5
   far end reported at the cap instead of inf             -> P7
   search coordinate's sign not flipped for 'lower'       -> P8
-  bootstrap critical value at 1 - level                  -> P9
-  full fit not refitted when a profile point beats it    -> P10
+  full fit not refitted when a profile point beats it    -> P9
 
 Author: Ted Teske with Claude (Anthropic), 2026.
 """
@@ -207,33 +206,7 @@ def test_P8_lower_bound_is_the_mirror_image(fam):
 
 
 @quiet
-def test_P9_bootstrap_calibration():
-    """The critical value is the level quantile of LR over replicates
-    drawn from the fit; the ends then sit at that value; a fixed seed
-    reproduces it; and an estimate that ran away is refused."""
-    x = _data('BL', 300)
-    r = bl.profile_bound(x, flower=70, calibration='bootstrap', n_boot=40,
-                         random_state=0)
-    assert r.lr_boot.shape == (40,) and np.all(r.lr_boot >= 0)
-    assert r.critical == np.quantile(r.lr_boot, 0.95)
-    assert r.critical > np.median(r.lr_boot)
-    again = bl.profile_bound(x, flower=70, calibration='bootstrap',
-                             n_boot=40, random_state=0)
-    assert np.array_equal(again.lr_boot, r.lr_boot)
-    lo, hi = r.interval
-    for end in (lo, hi):
-        g = bl.fit_bounds(x, flower=70, fupper=end, gmode=r.fit.mode,
-                          gsigma=r.fit.sigma)
-        assert 2 * (g.nnlf - r.fit.nnlf) == pytest.approx(r.critical,
-                                                          abs=2e-3)
-    y = _unbounded_data()
-    with pytest.raises(ValueError, match="needs a finite estimate"):
-        bl.profile_bound(y, flower=0, truncate=(float(np.median(y)), None),
-                         calibration='bootstrap', n_boot=5)
-
-
-@quiet
-def test_P10_full_fit_improved_by_a_better_profile_point(monkeypatch):
+def test_P9_full_fit_improved_by_a_better_profile_point(monkeypatch):
     """If the full fit stops short (here: it is replaced by a fit held at a
     bound 5 units off the maximum, which converges but is not the MLE),
     profile points beat it, and it must be refitted from the best of them:
@@ -261,9 +234,9 @@ def test_P10_full_fit_improved_by_a_better_profile_point(monkeypatch):
 
 @pytest.mark.parametrize("kwargs", [
     dict(bound='middle'), dict(fupper=100.0), dict(level=1.5),
-    dict(calibration='wilks'), dict(method='LSQ'),
-], ids=["bound", "profiled-bound-fixed", "level", "calibration", "lsq"])
-def test_P11_profile_bound_rejects_bad_input(kwargs):
+    dict(level=0.0), dict(method='LSQ'),
+], ids=["bound", "profiled-bound-fixed", "level-1.5", "level-0", "lsq"])
+def test_P10_profile_bound_rejects_bad_input(kwargs):
     with pytest.raises((ValueError, TypeError)):
         bl.profile_bound(_data('BL', 500), flower=70, **kwargs)
 

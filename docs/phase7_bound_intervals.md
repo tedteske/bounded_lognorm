@@ -20,7 +20,7 @@ Phase 7 asked three things:
 
 **Answers in brief:**
 
-1. Yes, two-sided, with the chi-squared(1) critical value, where the model is right and the bound is identified. Coverage was 0.94–0.96 at every sprints-like truth, for both families and at n = 50 to 781. One-sided it is lopsided, and it under-covers modestly (0.92) in one weakly identified case. A parametric-bootstrap calibration is offered for those cases (§3.4).
+1. Yes, two-sided, with the chi-squared(1) critical value, at the sprints' sample sizes. Coverage was 0.94–0.96 at all six full-data truths (both families, n = 691–781) and 0.92–0.96 for the truncated likelihood. It is **not** calibrated at n = 100 with the men's shape (0.83–0.88), where the bound sits close to the data and sigma is wide, though a women's shape held 0.95 at n = 50 and 100. Misses are lopsided, so only two-sided intervals are given. A parametric-bootstrap critical value, drawn from the fitted model, did no better in any case checked (§3.4), so the package does not offer one.
 2. Use a likelihood conditional on the fast runs: truncation at a threshold fixed in advance. Freeing the lower bound, trimming, and a robust objective all leave the fast end poorly fitted or collapse onto the record. With truncation, the men's data identify no upper bound at all, in either family. The profile likelihood then gives a one-sided statement: the best possible time is faster than about 9.4 s (§4–5).
 3. In the package, as 0.3.0, because the method is general and needs the package's fitting machinery (§6).
 
@@ -93,37 +93,42 @@ Nominal 0.95. All are two-sided; the gap between the truth and the sample maximu
 
 - women's LSQ-step truth, n = 50: 0.950
 - women's LSQ-step truth, n = 100: 0.956
-- [[S3, S4]]
+- **men's MLE truth, n = 100: 0.830** (300 replicates; 16.3% of misses with the interval too close to the data, 0.7% too far). A separate 200-replicate run, with the package's `fit_bounds` as the optimizer (§3.4), gave 0.875.
+- men, truncated at the median, truth 9.0 s, n = 200: 0.963 (300 replicates)
 
 At 90%, the full-data and women's truncated cases covered 0.89–0.91. The men's truncated cases covered 0.884 and 0.854.
 
-So the χ² interval holds its level, within Monte Carlo error, wherever the model is right and the bound is identified. That includes n = 50, and bounds 0.06 m/s from the data, closer than any of the sprints fits. The one clear exception is the men's truncated truth at 9.4 s, 2.5 standard errors below nominal. It is the weakly identified case nearest the real men's data.
+So at a few hundred observations the χ² interval holds its level within Monte Carlo error, full data or truncated, with bounds as close as 0.06 m/s to the data. It fails at n = 100 for the men's shape: there the gap between the bound and the sample maximum is wide relative to a narrow upper piece, LR is far from χ² (95% quantile 6.87), and the interval sits too close to the data. A user with a sample of a hundred should not take the 95% at face value.
+
+The lowest large-sample value, 0.920 for the men's truncated truth at 9.4 s, is partly an artefact of the simulation's own optimizer. Re-run on the same first 100 samples, the coverage was 0.93 with the simulation's fitter and 0.94 with the package's (`profile_bound` and `fit_bounds`). In the three samples where they differ, the simulation's fitter found maxima with sigma in the thousands, which `fit_bounds` caps and reports as a runaway. So the package's interval is, if anything, a little better calibrated there than the 0.920 suggests.
 
 ### 3.3 One-sided: lopsided
 
-Split by the sign of b̂ − b₀, misses are not shared evenly between the ends. The interval stops short on the data's side (the truth lies beyond its far end) 3.2–5.8% of the time. It overshoots on the far side 0.4–2.6% of the time. Each would be 2.5% if symmetric.
+Split by the sign of b̂ − b₀, misses are not shared evenly between the ends. In the large-sample cases the whole interval sits too close to the data (the truth lies beyond its far end) 2.4–5.8% of the time, and too far out 0.0–2.6% of the time. Each would be 2.5% if symmetric. At n = 100 with the men's shape it is 16.3% against 0.7%.
 
 Examples:
 
 - BL men: 4.1% vs 1.2%
 - BL2 men: 3.8% vs 0.4%
 - BL men, truncated at 9.4 s: 5.8% vs 2.2%
+- BL men, n = 100: 16.3% vs 0.7%
 
 This is the familiar skewness of the signed root for a parameter bounded on one side by the data, here the sample maximum. So `profile_bound` reports a two-sided interval only. A one-sided limit is not offered, since χ² at level 0.90 would not give a 95% one-sided one.
 
-### 3.4 Parametric-bootstrap calibration
+### 3.4 Parametric-bootstrap calibration: no better
 
-The 95% quantile of LR at each truth is exactly what a parametric bootstrap from that truth estimates. Across the cases above it ranged from 3.45 to 4.69, against 3.84.
+The 95% quantile of LR at each truth is exactly what a parametric bootstrap from that truth would estimate. Across the cases above it ranged from 3.45 to 6.87, against 3.84. In practice, though, the bootstrap has to be drawn from the *fitted* model, not the truth: n_boot samples from the fit, with the same size, window and fixed parameters, and LR at the fitted bound, whose `level` quantile replaces 3.84.
 
-In practice the bootstrap is drawn from the *fitted* model, not the truth. `profile_bound(calibration='bootstrap')` does that: n_boot samples from the fit, with the same size, window and fixed parameters, and LR at the fitted bound. Whether it is calibrated was checked with a nested simulation. For each outer sample, the bootstrap critical value is computed from that sample's own fit, and LR at the truth is compared with it:
+Whether that is calibrated was checked with a nested simulation. For each outer sample from the truth, the bootstrap critical value was computed from that sample's own fit, and LR at the truth was compared with it, and with 3.84. Fits used the package's `fit_bounds`, the best of two starts. Coverage:
 
-- [[N1]] BL men, full data, MLE truth, 200 outer × 100 inner
-- [[N2]] BL women, LSQ-step truth, n = 50, 200 × 100
-- [[N3]] BL men, truncated at the median, truth 9.4 s, 150 × 60
+- BL men, full data, MLE truth, n = 781 (200 outer × 100 inner): χ² **0.980**, bootstrap **0.980**. The bootstrap critical values had median 3.72, 10th–90th percentile 2.85–4.52. (χ²'s 0.980 here, against 0.947 over 1000 samples in §3.2, is within about 2 standard errors of a 200-sample estimate.)
+- BL men, truncated at the median, truth 9.4 s, n = 781 (150 × 60; one outer sample ran away and was skipped): χ² **0.966**, bootstrap **0.913**. Critical values: median 3.61, 10th–90th 2.68–5.10.
+- BL men, MLE truth, n = 100 (200 × 100): χ² **0.875**, bootstrap **0.865**. Critical values: median 5.54, 10th–90th 3.17–6.81.
+- A fourth run (BL women, LSQ-step truth, n = 50) was stopped by the session's time limit before it finished; χ² was already calibrated there (§3.2).
 
-[[conclusion on bootstrap]]
+The bootstrap does not repair the one case where χ² fails (n = 100), and it is worse in the truncated case. Its critical value moves a lot from sample to sample, because the fitted model's LR distribution depends on how close its fitted bound sits to the data, and that is exactly what is uncertain. It also needs a finite estimate to simulate from, which the men's truncated fits do not have.
 
-The bootstrap needs a finite estimate to simulate from. When the bound runs away, as it does for the men's truncated fits, it is not available, and `profile_bound` says so. The open far end is then a statement in itself.
+So `profile_bound` uses χ² only. A double bootstrap, or calibration over a range of truths, might do better at small n; that is open (§8).
 
 ## 4. The slow outliers (Numerical)
 
@@ -138,7 +143,7 @@ To measure what matters, the fits are compared by their **KS distance on the fas
 - MLE, lower bound free: the lower bound runs away (−8·10⁴, at the cap); 9.59 s (0.202) / 9.60 s (0.191)
 - MLE, Tukey far-out trim (drops 8 runs slower than 12.09 s): 9.51 s (0.120) / 9.56 s (0.116)
 - Robust, density power divergence (Basu et al. 1998), β = 0.1: 9.57 s (0.120) / 9.60 s (0.118)
-- Robust, β = 0.3 and 0.5: collapse onto 9.63 s (0.087–0.097 / 0.083–0.095)
+- Robust, β = 0.3 and 0.5: collapse onto 9.63 s, a genuine optimum (the objective, minimized with the bound held, worsens steadily away from the record) (0.087–0.097 / 0.083–0.095)
 - Truncated likelihood, faster than the lower quartile, median or upper quartile: **not identified**; the bound runs away in both families (0.044–0.074 / 0.044–0.078)
 
 **Women, mode fixed, BL / BL2:**
@@ -157,6 +162,8 @@ To measure what matters, the fits are compared by their **KS distance on the fas
 - MLE: 10.66 s (BL) and 10.69 s (BL2), fast-half KS 0.17
 - Truncated at the median: 10.52 s (BL) and 10.53 s (BL2), KS 0.036 for both. The mode moves to 8.63–8.70 m/s, below the window.
 - Truncated at the upper quartile, BL: the mode goes to 0, a degenerate fit.
+
+The DPD fits need several starting points. From the MLE alone, BL's β = 0.1 fit stopped at the record, with a worse objective than at 9.57 s; the notebook's fit tries five starting distances above the data and keeps the best.
 
 **Reading.** Freeing the lower bound does nothing useful: the data cannot place it, and the fast end stays poorly fitted. Trimming a stated handful of runs and mild down-weighting help a little. Strong down-weighting behaves like least squares and collapses onto the record. The truncated likelihood fits the fast end best, by a factor of 2–6 in KS distance. It does so with no assumption about the slow runs: they are not modelled, so they cannot distort the fit.
 
@@ -198,7 +205,7 @@ Its threshold is a choice. The analysis uses the median and the upper quartile, 
 
 So 9.55 s is rejected outright (BL, median threshold; BL2's LR values are 8.3, 5.8 and 3.2 at the same times, and its near end is 9.43 s).
 
-Under the weakest-calibrated simulation (§3.2, 95% quantile 4.69), the near end would be about 9.43 s instead of 9.38 s. With only the fastest quarter, the near end is 9.57 s. Fewer runs say less, but nothing different.
+Under the least favourable simulation of this regime (§3.2, 95% quantile of LR 4.69), the near end would be about 9.43 s instead of 9.38 s. With only the fastest quarter, the near end is 9.57 s. Fewer runs say less, but nothing different.
 
 Is a runaway estimate plausible under a finite truth? In the simulation from a 9.0 s truth, 10% of samples ran away; from 9.4 s, 0.4%. The men's data look like the first.
 
@@ -214,10 +221,10 @@ Is a runaway estimate plausible under a finite truth? In the simulation from a 9
 
 **API.**
 
-- `dist.profile_bound(data, bound='upper'|'lower', level=0.95, *, calibration='chi2'|'bootstrap', n_boot=200, random_state=None, truncate=None, fmode=..., fsigma=..., flower=..., fupper=..., gmode=..., ..., grid=None)`, on `bl` and `bl2`. MLE only. Returns a `BoundProfile` with:
+- `dist.profile_bound(data, bound='upper'|'lower', level=0.95, *, truncate=None, fmode=..., fsigma=..., flower=..., fupper=..., gmode=..., ..., grid=None)`, on `bl` and `bl2`. MLE only. Returns a `BoundProfile` with:
   - `.estimate`, `.interval` (±inf for an open end)
-  - `.fit`, `.critical`, `.level`, `.calibration`
-  - `.profile` (every point evaluated), `.lr_boot`, `.success`, `.message`
+  - `.fit`, `.critical` (the χ²₁ quantile), `.level`
+  - `.profile` (every point evaluated), `.success`, `.message`
 - `fit_bounds(..., truncate=(lo, hi))`, MLE only: the likelihood conditional on lo < x < hi, either end open. It records `.truncate`, `.n_used` and `.n_excluded`. Fits without it are unchanged.
 - `BoundsFit.at_cap` and `.collapsed` name the parameters that ran away and the bounds that collapsed. Previously these were only in `.message`.
 
@@ -233,18 +240,17 @@ The profile is assumed to fall away on each side without a second dip. That held
 
 **Cost.** Full data: about 15 fits; 1 s for BL and 10–15 s for BL2. Truncated: 2 s for BL and 1–2 min for BL2, since BL2's tail probability needs quadrature at every trial point.
 
-**Tests: Suite P** (`tests/test_profile.py`, 24 tests). Each is checked against independent computations:
+**Tests: Suite P** (`tests/test_profile.py`, 23 tests). Each is checked against independent computations:
 
 - the conditional likelihood by hand and by quadrature (P1)
 - data outside the window having exactly no influence (P2)
 - recovery of a truth (P3)
-- bad input (P4, P11)
+- bad input (P4, P10)
 - each interval end sitting at the critical value, by separate fits, with LR below it just inside and above just outside (P5)
 - nested levels (P6)
 - an open end (P7)
 - the lower bound as the mirror image of the upper (P8)
-- the bootstrap's critical value, ends and reproducibility (P9)
-- the refit of a full fit that stopped short (P10)
+- the refit of a full fit that stopped short (P9)
 
 Mutation checks are listed in the file header. Each change makes the listed tests fail:
 
@@ -255,10 +261,9 @@ Mutation checks are listed in the file header. Each change makes the listed test
 - χ² with 2 degrees of freedom
 - an open end reported at the cap
 - the sign not flipped for `lower`
-- the bootstrap quantile at 1 − level
 - no refit
 
-Full suite: [[N passed]].
+Full suite: 718 passed, 18 skipped (Suite B, which needs the original BL2 code, as before); 0.2.1 had 695.
 
 ## 7. Phase 6's Colab check
 
@@ -267,7 +272,8 @@ Ted ran both Phase 6 use-case notebooks (`Applications_100m_Sprints.ipynb`, `App
 ## 8. Still open
 
 - **Release.** 0.3.0 is not released. Until it is, the sprints notebook installs the package from this branch, so it runs in Colab for review. At release that line becomes `%pip install -q bounded-lognorm==0.3.0`, and `CITATION.cff` gets the version and date.
-- **One-sided limits.** Not offered (§3.3). A calibrated version would bootstrap the signed root per side.
+- **One-sided limits.** Not offered (§3.3). A calibrated version would need the signed root's distribution per side.
+- **Small samples.** At n = 100 the χ² interval can fall well short (0.83–0.88), and the parametric bootstrap from the fit does not fix it (§3.4). A double bootstrap, or a critical value calibrated over a range of truths, might; the docstring warns meanwhile.
 - **The truncation threshold.** It is chosen, not estimated. Results are shown at two thresholds. A principled choice is open, for example a threshold-stability plot as in extreme-value analysis.
 - **The women's mode.** With the mode free, the median-truncated fits agree across families (10.52–10.53 s). Whether to adopt that over the fixed mode is Ted's call.
 - **BL2 profiling under truncation is slow** (1–2 min). Caching the tail integrals across nearby parameter sets would help.

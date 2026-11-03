@@ -13,8 +13,12 @@ ratio statistic stays below a critical value.
 Uses only fit_bounds (any parameters fixed, an optional truncation window)
 and the distribution's public API, so it serves both families.
 
-Calibration, what the chi-squared value does and does not guarantee here,
-and the evidence: docs/phase7_bound_intervals.md.
+The critical value is chi-squared(1) (Wilks). What it does and does not
+guarantee here, by simulation from both families, is in
+docs/phase7_bound_intervals.md: two-sided coverage held at the sprints'
+sample sizes, fell short at n = 100 with the bound close to the data, and a
+parametric-bootstrap critical value (drawn from the fitted model) did no
+better in any case checked, so none is offered.
 
 Ted Teske with Claude (Anthropic), 2026.
 """
@@ -49,21 +53,18 @@ class BoundProfile:
                     the likelihood keeps rising away from the data)
       interval    : (lo, hi) in data units; an end the data cannot close is
                     +-inf
-      level, critical, calibration : the confidence level, the critical
-                    value of LR used, and how it was obtained
+      level, critical : the confidence level and the critical value of
+                    LR used (the chi-squared(1) quantile)
       fit         : the full maximum-likelihood BoundsFit
       profile     : (values, lr), every point evaluated, sorted by value
-      lr_boot     : calibration='bootstrap' only, LR at the fitted bound in
-                    each replicate
       success, message : False, with the reason, if a fit the interval
-                    depends on did not converge or a replicate failed
+                    depends on did not converge
     """
 
     def __repr__(self):
         lo, hi = self.interval
         return (f"BoundProfile({self.bound}: estimate {self.estimate!r}, "
-                f"{self.level:.0%} interval ({lo!r}, {hi!r}), "
-                f"{self.calibration})")
+                f"{self.level:.0%} interval ({lo!r}, {hi!r}))")
 
 
 def _quiet(fn, *args, **kw):
@@ -72,9 +73,7 @@ def _quiet(fn, *args, **kw):
         return fn(*args, **kw)
 
 
-def profile_bound(dist, data, bound='upper', level=0.95, *,
-                  calibration='chi2', n_boot=200, random_state=None,
-                  truncate=None, fmode=None, fsigma=None, flower=None,
+def profile_bound(dist, data, bound='upper', level=0.95, *, truncate=None, fmode=None, fsigma=None, flower=None,
                   fupper=None, gmode=None, gsigma=None, glower=None,
                   gupper=None, grid=None):
     """See _BoundsBridge.profile_bound for the full description."""
@@ -82,8 +81,6 @@ def profile_bound(dist, data, bound='upper', level=0.95, *,
         raise ValueError("bound must be 'upper' or 'lower'")
     if not 0 < level < 1:
         raise ValueError("level must be between 0 and 1")
-    if calibration not in ('chi2', 'bootstrap'):
-        raise ValueError("calibration must be 'chi2' or 'bootstrap'")
     fixed = dict(mode=fmode, sigma=fsigma, lower=flower, upper=fupper)
     if fixed[bound] is not None:
         raise ValueError(f"the profiled bound must be free: do not pass "
@@ -173,23 +170,10 @@ def profile_bound(dist, data, bound='upper', level=0.95, *,
             break
     ran_away, u_hat = locate()
 
-    if calibration == 'chi2':
-        crit = float(chi2.ppf(level, 1))
-        lr_boot = None
-    else:
-        if ran_away:
-            raise ValueError(
-                f"calibration='bootstrap' needs a finite estimate, but the "
-                f"{bound} bound runs away from the data (the likelihood "
-                f"keeps rising): the interval is open on that side. Use "
-                f"calibration='chi2', or a window with more data.")
-        lr_boot, n_fail = _bootstrap_lr(dist, full, used, truncate, fkw,
-                                        bound, others, n_boot, random_state)
-        crit = float(np.quantile(lr_boot, level))
-        if n_fail:
-            messages.append(f"{n_fail} of {n_boot} bootstrap replicates had "
-                            f"a fit that did not converge or identify every "
-                            f"parameter (kept)")
+    # Wilks: chi-squared with one degree of freedom. A parametric-bootstrap
+    # calibration was tried in Phase 7 and did no better (see the module
+    # docstring), so none is offered.
+    crit = float(chi2.ppf(level, 1))
 
     def crossing(direction):
         """Step from u_hat toward the data (direction -1) or away from it
@@ -248,41 +232,8 @@ def profile_bound(dist, data, bound='upper', level=0.95, *,
     out.interval = (float(lo), float(hi))
     out.level = float(level)
     out.critical = crit
-    out.calibration = calibration
     out.fit = full
     out.profile = (bvals[order], lrs[order])
-    out.lr_boot = lr_boot
     out.success = not messages
     out.message = "; ".join(messages) if messages else "ok"
     return out
-
-
-def _bootstrap_lr(dist, full, used, truncate, fkw, bound, others, n_boot,
-                  random_state):
-    """LR at the fitted bound for n_boot samples drawn from the fitted
-    model: same size as the data used, same truncation window, same fixed
-    parameters. Returns (array of LR, number of replicates with a failed
-    fit)."""
-    rng = np.random.default_rng(random_state)
-    frozen = dist.from_bounds(*full)
-    _, lo, hi = _truncation(used, truncate)
-    p_lo = 0.0 if lo is None else float(frozen.cdf(lo))
-    p_hi = 1.0 if hi is None else float(frozen.cdf(hi))
-    b_hat = getattr(full, bound)
-    out, n_fail = [], 0
-    for _ in range(int(n_boot)):
-        if lo is None and hi is None:
-            x = frozen.rvs(size=used.size, random_state=rng)
-        else:
-            x = frozen.ppf(rng.uniform(p_lo, p_hi, size=used.size))
-        g = _quiet(fit_bounds, dist, x, 'MLE', **fkw,
-                   **{f'f{bound}': b_hat},
-                   **{f'g{k}': getattr(full, k) for k in others})
-        f1 = _quiet(fit_bounds, dist, x, 'MLE', **fkw)
-        f2 = _quiet(fit_bounds, dist, x, 'MLE', **fkw,
-                    **{f'g{k}': getattr(g, k) for k in others},
-                    **{f'g{bound}': b_hat})
-        f = min((f1, f2), key=lambda r: r.nnlf)
-        n_fail += not (g.success and f.success)
-        out.append(max(2.0 * (g.nnlf - f.nnlf), 0.0))
-    return np.array(out), n_fail
