@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may change the API.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-11-04)
 
 - **`profile_bound`**: a profile-likelihood confidence interval for the upper or lower bound, on both `bl` and `bl2`, with `fit_bounds`' fixed-parameter options. The bound is held at trial values and the likelihood maximized over the other free parameters; the interval is where the likelihood ratio stays below the chi-squared(1) quantile. An end the data cannot close is reported as `inf`. It gives an interval where a bootstrap cannot, for a bound at or near the sample extreme. Maximum likelihood only. Calibration evidence, including where it falls short, is in `docs/phase7_bound_intervals.md`.
 - **`fit_bounds(..., truncate=(lo, hi))`**: maximum likelihood conditional on a window of the data (either end open), so that data outside it have no influence on the fit. The result records the window and the numbers of data used and set aside (`.truncate`, `.n_used`, `.n_excluded`).

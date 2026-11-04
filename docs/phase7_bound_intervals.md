@@ -1,6 +1,6 @@
 # Phase 7 — An Interval for a Fitted Bound
 
-**Status:** `profile_bound` and `fit_bounds(..., truncate=...)` implemented for both families on branch `phase7-bound-intervals`, proposed as 0.3.0 (not released). Tests: Suite P (`tests/test_profile.py`), mutation-checked. The sprints notebook has a new Part 5. The simulation scripts are not in the repository; their designs, seeds and results are below.
+**Status:** `profile_bound` and `fit_bounds(..., truncate=...)` for both families, released in 0.3.0 (PR #23). Tests: Suite P (`tests/test_profile.py`), mutation-checked. The sprints notebook has a new Part 5. The simulation scripts are not in the repository; their designs, seeds and results are below.
 
 **Epistemic labels**, as in the earlier notes: *Proof* = a complete argument. *Argument* = a reasoned case that is not a complete proof. *Numerical* = measured, on the stated simulations or data; true for the cases run, not a theorem. Monte Carlo standard errors are given where they matter: about ±0.007 on a coverage of 0.95 from 1000 replicates, ±0.010 from 500.
 
@@ -271,7 +271,6 @@ Ted ran both Phase 6 use-case notebooks (`Applications_100m_Sprints.ipynb`, `App
 
 ## 8. Still open
 
-- **Release.** 0.3.0 is not released. Until it is, the sprints notebook installs the package from this branch, so it runs in Colab for review. At release that line becomes `%pip install -q bounded-lognorm==0.3.0`, and `CITATION.cff` gets the version and date.
 - **One-sided limits.** Not offered (§3.3). A calibrated version would need the signed root's distribution per side.
 - **Small samples.** At n = 100 the χ² interval can fall well short (0.83–0.88), and the parametric bootstrap from the fit does not fix it (§3.4). A double bootstrap, or a critical value calibrated over a range of truths, might; the docstring warns meanwhile.
 - **The truncation threshold.** It is chosen, not estimated. Results are shown at two thresholds. A principled choice is open, for example a threshold-stability plot as in extreme-value analysis.
