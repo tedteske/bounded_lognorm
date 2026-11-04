@@ -8,7 +8,8 @@ by least squares on the empirical CDF as well as by maximum likelihood. It
 works through a distribution's public API only (bounds_to_shapes, logpdf,
 cdf), so it serves any family in this package with the same bridge.
 
-Added in 0.2.0. Ted Teske with Claude (Anthropic), 2026.
+Added in 0.2.0; `truncate` (a conditional likelihood on a window of the
+data) added in 0.3.0. Ted Teske with Claude (Anthropic), 2026.
 """
 import warnings
 from collections import namedtuple
@@ -45,7 +46,14 @@ class BoundsFit(namedtuple('BoundsFit', PARAMS)):
       stderr   : BoundsParams of standard errors, sqrt(diag(cov)); None
                  for MLE
       nnlf     : negative log-likelihood of the data at the fit (both
-                 methods, so fits can be compared)
+                 methods, so fits can be compared); with `truncate`, the
+                 conditional one, of the data inside the window
+      at_cap, collapsed : names of the parameters that ran away toward
+                 their cap, and of the bounds that collapsed onto the data
+                 (both empty for a fit that identified everything; 0.3.0)
+      truncate : the window (lo, hi) the likelihood was conditional on,
+                 or None (0.3.0)
+      n_used, n_excluded : data inside and outside the window (0.3.0)
       success, message : from the optimizer
       optimizer : the raw scipy result, in internal unconstrained
                  coordinates (not the bounds parametrization)
@@ -55,6 +63,56 @@ class BoundsFit(namedtuple('BoundsFit', PARAMS)):
     def __repr__(self):
         vals = ", ".join(f"{k}={v!r}" for k, v in zip(PARAMS, self))
         return f"BoundsFit({vals}, method={self.method!r})"
+
+
+def _truncation(data, truncate):
+    """
+    Validate `truncate` and select the data inside the window.
+
+    truncate is None, or a pair (lo, hi) with either end None: the sample is
+    taken as observed only for lo < x < hi, so the likelihood is conditional
+    on that window. Returns (data inside, lo, hi), with lo, hi None or float.
+    """
+    if truncate is None:
+        return data, None, None
+    try:
+        lo, hi = truncate
+    except (TypeError, ValueError):
+        raise ValueError("truncate must be None or a pair (lo, hi); use "
+                         "None for an open end, e.g. (t, None)") from None
+    lo = None if lo is None else float(lo)
+    hi = None if hi is None else float(hi)
+    if lo is None and hi is None:
+        return data, None, None
+    if (lo is not None and not np.isfinite(lo)) or \
+            (hi is not None and not np.isfinite(hi)):
+        raise ValueError("truncation points must be finite; use None for "
+                         "an open end")
+    if lo is not None and hi is not None and not lo < hi:
+        raise ValueError("truncate = (lo, hi) needs lo < hi")
+    keep = np.ones(data.size, dtype=bool)
+    if lo is not None:
+        keep &= data > lo
+    if hi is not None:
+        keep &= data < hi
+    return data[keep], lo, hi
+
+
+def _log_window(dist, lo, hi, args):
+    """log P(lo < X < hi) for the distribution with shape/loc/scale args;
+    0 when there is no truncation. Each one-sided window is taken from its
+    own tail (logsf, logcdf), so a window deep in a tail keeps its
+    accuracy."""
+    if lo is None and hi is None:
+        return 0.0
+    if hi is None:
+        return float(dist.logsf(lo, *args))
+    if lo is None:
+        return float(dist.logcdf(hi, *args))
+    p = float(dist.cdf(hi, *args)) - float(dist.cdf(lo, *args))
+    if not p > 0:
+        p = float(dist.sf(lo, *args)) - float(dist.sf(hi, *args))
+    return float(np.log(p)) if p > 0 else -np.inf
 
 
 def _ecdf(data, kind):
@@ -81,14 +139,23 @@ def _ecdf(data, kind):
 
 def fit_bounds(dist, data, method='MLE', *, fmode=None, fsigma=None,
                flower=None, fupper=None, gmode=None, gsigma=None,
-               glower=None, gupper=None, ecdf='midpoint'):
-    """See bounded_lognorm2_gen.fit_bounds for the full description."""
+               glower=None, gupper=None, ecdf='midpoint', truncate=None):
+    """See _BoundsBridge.fit_bounds for the full description."""
     data = np.asarray(data, dtype=float).ravel()
     if data.size == 0 or not np.all(np.isfinite(data)):
         raise ValueError("data must be a non-empty array of finite values")
     method = str(method).upper()
     if method not in ('MLE', 'LSQ'):
         raise ValueError("method must be 'MLE' or 'LSQ'")
+    n_given = data.size
+    data, t_lo, t_hi = _truncation(data, truncate)
+    truncated = t_lo is not None or t_hi is not None
+    if truncated and method != 'MLE':
+        raise ValueError("truncate is for method='MLE' (a conditional "
+                         "likelihood); least squares on the empirical cdf "
+                         "has no conditional form here")
+    if data.size == 0:
+        raise ValueError("no data inside the truncation window")
 
     fixed = dict(zip(PARAMS, (fmode, fsigma, flower, fupper)))
     fixed = {k: float(v) for k, v in fixed.items() if v is not None}
@@ -208,7 +275,13 @@ def fit_bounds(dist, data, method='MLE', *, fmode=None, fsigma=None,
     def nnlf(p):
         c, s, loc, scale = shapes(p)
         lp = dist.logpdf(data, c, s, loc, scale)
-        return float(-np.sum(lp)) if np.all(np.isfinite(lp)) else np.inf
+        if not np.all(np.isfinite(lp)):
+            return np.inf
+        # Conditional on the window: each observation's density is divided
+        # by the window's probability, so add n * -log P(window).
+        lw = _log_window(dist, t_lo, t_hi, (c, s, loc, scale))
+        return float(-np.sum(lp) + data.size * lw) if lw > -np.inf \
+            else np.inf
 
     def penalized(fn, bad):
         # An extreme trial point can still round into an invalid set (e.g.
@@ -289,6 +362,11 @@ def fit_bounds(dist, data, method='MLE', *, fmode=None, fsigma=None,
     out.stderr = (BoundsParams(*np.sqrt(np.clip(np.diag(cov), 0, None)))
                   if cov is not None else None)
     out.nnlf = nnlf(p_hat)
+    out.at_cap = tuple(at_cap)
+    out.collapsed = tuple(collapsed)
+    out.truncate = (t_lo, t_hi) if truncated else None
+    out.n_used = int(data.size)
+    out.n_excluded = int(n_given - data.size)
     out.success = bool(opt.success) and not at_cap and not collapsed
     msgs = []
     if at_cap:

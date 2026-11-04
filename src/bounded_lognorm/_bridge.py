@@ -21,6 +21,7 @@ import warnings
 import numpy as np
 
 from ._fit import fit_bounds as _fit_bounds
+from ._profile import profile_bound as _profile_bound
 
 try:                                    # scipy >= 1.9; used by scipy.stats.fit
     from scipy.stats._distn_infrastructure import _ShapeInfo
@@ -90,7 +91,7 @@ class _BoundsBridge:
 
     def fit_bounds(self, data, method='MLE', *, fmode=None, fsigma=None,
                    flower=None, fupper=None, gmode=None, gsigma=None,
-                   glower=None, gupper=None, ecdf='midpoint'):
+                   glower=None, gupper=None, ecdf='midpoint', truncate=None):
         """
         Fit in the bounds parametrization, holding any parameters fixed.
 
@@ -116,12 +117,24 @@ class _BoundsBridge:
             the top of each jump, i/n, as the original notebook did; it puts
             the largest value at exactly 1, which pulls a fitted upper bound
             toward max(data).
+        truncate : (lo, hi), optional
+            MLE only (0.3.0). Fit by the likelihood conditional on the
+            window lo < x < hi, either end None for open: each density is
+            divided by the window's probability, and data outside it are
+            set aside (counted in .n_excluded). With (t, None) only the data
+            above t inform the fit, and they are not distorted by data
+            below it, e.g. a few very slow runs when the question is about
+            the fastest possible one. The threshold should be chosen
+            without looking at the fit (a sample quantile, say); profile
+            a bound with the same window to see what the window's data
+            can say about it.
 
         Returns
         -------
         BoundsFit
             Unpacks as (mode, sigma, lower, upper) and carries .method,
-            .free, .nnlf, .success, .message, and for LSQ .cov and .stderr.
+            .free, .nnlf, .success, .message, .truncate, .n_used,
+            .n_excluded, and for LSQ .cov and .stderr.
 
         Notes
         -----
@@ -156,7 +169,77 @@ class _BoundsBridge:
         return _fit_bounds(self, data, method, fmode=fmode, fsigma=fsigma,
                            flower=flower, fupper=fupper, gmode=gmode,
                            gsigma=gsigma, glower=glower, gupper=gupper,
-                           ecdf=ecdf)
+                           ecdf=ecdf, truncate=truncate)
+
+    def profile_bound(self, data, bound='upper', level=0.95, *,
+                      truncate=None, fmode=None, fsigma=None, flower=None,
+                      fupper=None, gmode=None, gsigma=None, glower=None,
+                      gupper=None, grid=None):
+        """
+        Profile-likelihood confidence interval for one bound (0.3.0).
+
+        The bound is held at each trial value and the likelihood maximized
+        over the other free parameters (fit_bounds with that bound fixed).
+        The interval is the set of values whose likelihood ratio statistic
+        LR(b) = 2 [nnlf_profile(b) - nnlf_max] is at most the chi-squared(1)
+        quantile at `level` (3.84 for 95%).
+
+        Parameters
+        ----------
+        data : array_like
+        bound : 'upper' or 'lower'
+            The bound to profile. It must be free (do not pass fupper for
+            'upper').
+        level : float
+            Confidence level, default 0.95.
+        truncate, fmode, fsigma, flower, fupper, gmode, gsigma, glower,
+        gupper :
+            As in fit_bounds (MLE). The same window and fixed values apply
+            to every fit of the profile.
+        grid : array_like, optional
+            Further values of the bound at which to evaluate the profile,
+            for plotting; values on the wrong side of the data are dropped.
+
+        Returns
+        -------
+        BoundProfile
+            .interval (lo, hi) in data units; an end the data cannot close
+            is +-inf (the likelihood never falls far enough). .estimate is
+            the maximum-likelihood bound (+-inf when it ran away). Also
+            .fit (the full BoundsFit), .critical, .level, .profile (bound
+            values and LR, sorted, every point evaluated), .success,
+            .message.
+
+        Notes
+        -----
+        MLE only: least squares on the empirical cdf has no likelihood,
+        and its residuals are not independent, so the curvature of its
+        objective is not a measure of uncertainty.
+
+        A bound is a support parameter, so Wilks' theorem is not
+        automatic. For BL and BL2 the density vanishes faster than any
+        power at each bound, which argues for the regular case (Smith
+        1985). In simulation from both families (docs/
+        phase7_bound_intervals.md), two-sided 95% intervals covered the
+        truth 92-96% of the time at the sprints' sample sizes (n ~ 700),
+        full data or truncated, and 95% at n = 50 and 100 for one shape,
+        but only 83-88% at n = 100 for another, with the bound close to
+        the data and sigma wide. Misses are lopsided: the interval stops short on
+        the data's side more often than it overshoots, so do not halve the
+        level for a one-sided limit. A parametric-bootstrap critical value
+        did no better in any case checked, so none is offered.
+
+        The profile is assumed to fall away on each side of the maximum
+        without a second dip; the search steps outward in the log of the
+        distance from the data and stops at the first crossing. An end is
+        reported open (inf) when LR stays below the critical value out to
+        fit_bounds' cap on a bound's distance from the data (10^4 times
+        the data range).
+        """
+        return _profile_bound(self, data, bound, level, truncate=truncate,
+                              fmode=fmode, fsigma=fsigma, flower=flower,
+                              fupper=fupper, gmode=gmode, gsigma=gsigma,
+                              glower=glower, gupper=gupper, grid=grid)
 
     def from_bounds(self, mode, sigma, lower=None, upper=None):
         """

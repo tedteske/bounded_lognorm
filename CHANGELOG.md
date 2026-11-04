@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may change the API.
 
+## 0.3.0 (unreleased)
+
+- **`profile_bound`**: a profile-likelihood confidence interval for the upper or lower bound, on both `bl` and `bl2`, with `fit_bounds`' fixed-parameter options. The bound is held at trial values and the likelihood maximized over the other free parameters; the interval is where the likelihood ratio stays below the chi-squared(1) quantile. An end the data cannot close is reported as `inf`. It gives an interval where a bootstrap cannot, for a bound at or near the sample extreme. Maximum likelihood only. Calibration evidence, including where it falls short, is in `docs/phase7_bound_intervals.md`.
+- **`fit_bounds(..., truncate=(lo, hi))`**: maximum likelihood conditional on a window of the data (either end open), so that data outside it have no influence on the fit. The result records the window and the numbers of data used and set aside (`.truncate`, `.n_used`, `.n_excluded`).
+- `BoundsFit` also records which parameters ran away (`.at_cap`) and which bounds collapsed onto the data (`.collapsed`), previously only in `.message`.
+- Nothing else changes: fits without `truncate` are identical to 0.2.1's.
+
 ## 0.2.1 (2026-11-02)
 
 - **`fit_bounds` reports a bound that collapses onto the data.** With least squares, a free bound can converge onto the sample's smallest or largest value: the fit keeps improving as it approaches, as for the men's 100m speeds with the lower bound fixed at 0. 0.2.0 returned such fits with `success = True` and a standard error of ~0 for the bound, so a covariance interval was spuriously narrow. They now have `success = False`, a RuntimeWarning naming the bound, and NaN in that bound's `.cov` rows and columns and `.stderr`. The test is whether moving the bound 1000 times closer to the edge worsens the fit; every genuine fit examined worsens by 1e-2 or more and every collapse by 0 or less (`docs/v0.2_tails_and_fit_bounds.md` §2.1). Nothing else changes.

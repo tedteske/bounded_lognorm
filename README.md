@@ -56,7 +56,18 @@ fit.stderr.upper                                   # LSQ also gives a covariance
 
 The data cannot always pin every parameter down. A fit whose sigma or a bound runs off toward infinity, or (since 0.2.1) whose free bound collapses onto the smallest or largest data value, is reported with `fit.success == False` and a warning rather than returned as if it were an answer. A collapsed bound is the sample extreme, not an estimate beyond it, and its standard error is NaN.
 
-`bl` has the same `from_bounds`, `fit`, `fit_bounds`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
+### An interval for a bound (0.3.0)
+
+`profile_bound` gives a profile-likelihood confidence interval for the upper or lower bound, with the same fixed-parameter options as `fit_bounds` (maximum likelihood only):
+
+```python
+r = bl2.profile_bound(sample, 'upper', flower=-5)  # 95% by default
+r.estimate, r.interval                             # an end the data cannot close is inf
+```
+
+`fit_bounds(..., truncate=(t, None))` and `profile_bound(..., truncate=(t, None))` fit by the likelihood conditional on the data above `t`, so that data below it (outliers far from the bound of interest, say) have no influence. A bound is a support parameter, and when the data say little about it the interval can be open on the far side. The critical value is chi-squared(1); how well that is calibrated, by simulation from both families (well at a few hundred observations, short of 95% at 100 when the bound is close to the data), is in [`docs/phase7_bound_intervals.md`](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase7_bound_intervals.md).
+
+`bl` has the same `from_bounds`, `fit`, `fit_bounds`, `profile_bound`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
 
 ## Which one?
 
@@ -165,6 +176,7 @@ Derivations and verification notes:
 - [0.2.0: tail quantiles and bounds-form fitting](https://github.com/tedteske/bounded_lognorm/blob/master/docs/v0.2_tails_and_fit_bounds.md)
 - [Phase 5: porting BL into the package](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase5_bl_port.md)
 - [Phase 6: use cases, and the 0.2.1 fit_bounds fix](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase6_use_cases.md)
+- [Phase 7: an interval for a fitted bound (0.3.0)](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase7_bound_intervals.md)
 
 ## Citing
 
