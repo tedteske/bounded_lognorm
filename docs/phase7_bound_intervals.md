@@ -128,7 +128,7 @@ Whether that is calibrated was checked with a nested simulation. For each outer 
 
 The bootstrap does not repair the one case where χ² fails (n = 100), and it is worse in the truncated case. Its critical value moves a lot from sample to sample, because the fitted model's LR distribution depends on how close its fitted bound sits to the data, and that is exactly what is uncertain. It also needs a finite estimate to simulate from, which the men's truncated fits do not have.
 
-So `profile_bound` uses χ² only. A double bootstrap, or calibration over a range of truths, might do better at small n; that is open (§8).
+So `profile_bound` uses χ² only. A double bootstrap, or calibration over a range of truths, might do better at small n; that is open (§9).
 
 ## 4. The slow outliers (Numerical)
 
@@ -269,7 +269,15 @@ Full suite: 718 passed, 18 skipped (Suite B, which needs the original BL2 code, 
 
 Ted ran both Phase 6 use-case notebooks (`Applications_100m_Sprints.ipynb`, `Applications_Monte_Carlo.ipynb`) top to bottom in Google Colab on 2026-11-02, installing bounded-lognorm 0.2.1 from PyPI. The results were as expected. This is recorded in `docs/phase6_use_cases.md` §6.
 
-## 8. Still open
+## 8. Release record: 0.3.0 (Numerical)
+
+- **Merged:** PR #23 (Phase 7) as `64c9c83`. GitHub's merge endpoint returned server errors, so the same merge commit was made locally and pushed; GitHub recorded the PR as merged. CI on PR #23: all 11 jobs passed, the notebook run included. PR #24 (release prep: changelog and `CITATION.cff` dated, sprints notebook pinned to `bounded-lognorm==0.3.0`) merged as `83c13bf`. Its test matrix and build passed; its notebook check failed as expected, because 0.3.0 was not yet on PyPI.
+- **PyPI:** GitHub release `v0.3.0` published by Ted on 2026-11-04 (this session cannot create releases); the publish run passed and uploaded. https://pypi.org/project/bounded-lognorm/0.3.0/
+- **Check after release:** `pip install bounded-lognorm==0.3.0` into a clean Python 3.13 environment (NumPy 2.5.4, SciPy 1.18.1) gave 0.3.0; `profile_bound` and `fit_bounds(..., truncate=...)` ran on both families. BL's mean (5.849409133600799), entropy (2.733654201134262) and isf(1e-20) (19.74541097177343), and BL2's mean (5.872972571882167), for mode 5, σ 10 on (−5, 20), are identical to 0.2.1's to every printed digit.
+- **Notebooks against PyPI:** the notebooks workflow, re-run by hand on master (`83c13bf`) after the upload, executed both use-case notebooks top to bottom with no errors, the sprints notebook installing 0.3.0 from PyPI (8 min; run 41919929357).
+- **Zenodo:** version 0.3.0 is [10.5281/zenodo.23964313](https://doi.org/10.5281/zenodo.23964313); the concept DOI [10.5281/zenodo.23897348](https://doi.org/10.5281/zenodo.23897348) resolves to the latest.
+
+## 9. Still open
 
 - **One-sided limits.** Not offered (§3.3). A calibrated version would need the signed root's distribution per side.
 - **Small samples.** At n = 100 the χ² interval can fall well short (0.83–0.88), and the parametric bootstrap from the fit does not fix it (§3.4). A double bootstrap, or a critical value calibrated over a range of truths, might; the docstring warns meanwhile.
