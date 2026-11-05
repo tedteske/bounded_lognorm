@@ -14,8 +14,9 @@ version: 0.4.0
 date-released: "2026-11-05"
 license: MIT
 # Concept DOI: all versions, always resolving to the latest. Each release's
-# own DOI is listed on that Zenodo record (0.3.0: 10.5281/zenodo.23964313;
-# 0.2.1: 10.5281/zenodo.23898464; 0.2.0: 10.5281/zenodo.23897349).
+# own DOI is listed on that Zenodo record (0.4.0: 10.5281/zenodo.23988724;
+# 0.3.0: 10.5281/zenodo.23964313; 0.2.1: 10.5281/zenodo.23898464;
+# 0.2.0: 10.5281/zenodo.23897349).
 doi: 10.5281/zenodo.23897348
 repository-code: "https://github.com/tedteske/bounded_lognorm"
 url: "https://pypi.org/project/bounded-lognorm/"
