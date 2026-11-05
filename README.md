@@ -67,7 +67,18 @@ r.estimate, r.interval                             # an end the data cannot clos
 
 `fit_bounds(..., truncate=(t, None))` and `profile_bound(..., truncate=(t, None))` fit by the likelihood conditional on the data above `t`, so that data below it (outliers far from the bound of interest, say) have no influence. A bound is a support parameter, and when the data say little about it the interval can be open on the far side. The critical value is chi-squared(1); how well that is calibrated, by simulation from both families (well at a few hundred observations, short of 95% at 100 when the bound is close to the data), is in [`docs/phase7_bound_intervals.md`](https://github.com/tedteske/bounded_lognorm/blob/master/docs/phase7_bound_intervals.md).
 
-`bl` has the same `from_bounds`, `fit`, `fit_bounds`, `profile_bound`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
+## From a standard deviation (0.4.0)
+
+`sigma` is the spread of each lognormal piece before the bounds cut it off, so the distribution's own standard deviation is smaller. When what you have is a standard deviation, a sample's for instance, `from_std` takes it in place of sigma:
+
+```python
+rv = bl2.from_std(mode=90, std=3.7, lower=0, upper=100)    # rv.std() == 3.7
+sigma = bl2.sigma_from_std(90, 3.7, 0, 100)                 # 4.305 (BL: 4.991)
+```
+
+There is no closed form for either family, so sigma is found by root finding, to 1e-13 relative. A standard deviation close to the uniform distribution's, (upper − lower)/√12, has no usable sigma and raises `ValueError`. Details, including why the search stops at sigma = 10¹² × (upper − lower), are in [`docs/v0.4_from_std.md`](https://github.com/tedteske/bounded_lognorm/blob/master/docs/v0.4_from_std.md).
+
+`bl` has the same `from_bounds`, `from_std`, `sigma_from_std`, `fit`, `fit_bounds`, `profile_bound`, `to_bounds` and `bounds_to_shapes`; everything above works with `bl` in place of `bl2`.
 
 ## Which one?
 
