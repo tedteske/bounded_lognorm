@@ -8,6 +8,8 @@ lower. This mixin supplies, identically for both:
   - from_bounds / bounds_to_shapes / to_bounds, the (mode, sigma, lower,
     upper) <-> (c, s, loc, scale) bridge, with None meaning an unbounded
     side (mode -/+ 1000 sigma);
+  - from_std / sigma_from_std, the same with a standard deviation in
+    place of sigma (0.4.0; see _from_std.py);
   - fit_bounds, fitting in the bounds form (see _fit.py);
   - the scipy hooks that do not depend on the density: _shape_info,
     _fitstart, and _updated_ctor_param (which carries `precision` through
@@ -21,6 +23,7 @@ import warnings
 import numpy as np
 
 from ._fit import fit_bounds as _fit_bounds
+from ._from_std import sigma_from_std as _sigma_from_std
 from ._profile import profile_bound as _profile_bound
 
 try:                                    # scipy >= 1.9; used by scipy.stats.fit
@@ -270,6 +273,96 @@ class _BoundsBridge:
         """
         c, s, loc, scale = self.bounds_to_shapes(mode, sigma, lower, upper)
         return self(c, s, loc=loc, scale=scale)
+
+    def from_std(self, mode, std, lower=None, upper=None):
+        """
+        Frozen distribution with a given standard deviation (0.4.0).
+
+        Like from_bounds, but with the standard deviation in place of
+        sigma: the sigma is solved for so that the result's std() equals
+        `std`, for this mode and these bounds. Use it when what you know
+        is a spread -- a sample standard deviation, say -- rather than
+        sigma, which is the spread of each lognormal piece before the
+        bounds cut it off and is always larger than the std.
+
+        Parameters
+        ----------
+        mode : float
+            x at the point of maximum density
+        std : float
+            the standard deviation the distribution should have, > 0
+        lower, upper : float or None
+            bounds of the support, as in from_bounds (None: mode -/+ 1000
+            sigma, for the sigma found)
+
+        Returns
+        -------
+        from_bounds(mode, sigma_from_std(mode, std, lower, upper), lower,
+        upper): a frozen rv at this instance's precision.
+
+        Raises ValueError for invalid parameters, as from_bounds does, and
+        when no sigma gives `std` (see sigma_from_std). Accepts arrays
+        (broadcast elementwise). For the sigma itself, use sigma_from_std.
+
+        Example
+        -------
+        Occupancy between 0 and 100%, most likely 90%, with an observed
+        standard deviation of 3.7 points:
+
+        >>> rv = bl.from_std(90, 3.7, 0, 100)
+        >>> round(float(rv.std()), 10)
+        3.7
+        """
+        sigma = self.sigma_from_std(mode, std, lower, upper)
+        return self.from_bounds(mode, sigma, lower, upper)
+
+    def sigma_from_std(self, mode, std, lower=None, upper=None):
+        """
+        The sigma whose distribution has standard deviation `std` (0.4.0).
+
+        Solves from_bounds(mode, sigma, lower, upper).std() == std for
+        sigma, with mode and bounds held fixed. There is no closed form,
+        for either family (docs/v0.4_from_std.md), so this is a root find
+        in log(sigma): brentq, to a relative tolerance of 1e-13 in sigma,
+        on this instance's own std (so at its precision). Typically
+        ~10-15 evaluations of std: about 5 ms for BL, 70 ms for BL2.
+
+        Parameters
+        ----------
+        mode, lower, upper : float or None
+            as in from_bounds
+        std : float
+            the target standard deviation, > 0
+
+        Returns
+        -------
+        sigma : float (ndarray for array input, broadcast elementwise)
+
+        Raises
+        ------
+        ValueError
+            For invalid parameters (non-finite, std <= 0, not lower < mode
+            < upper), and when `std` is not attainable: with both bounds
+            finite, std rises with sigma toward (upper - lower)/sqrt(12),
+            the uniform distribution's, which it approaches only
+            logarithmically slowly; a std at or near that value has no
+            usable sigma, and the error says how large std can get.
+
+        Notes
+        -----
+        The root is unique because std increases with sigma. That is
+        checked numerically, not proved: for modes from 1e-15 to 1 - 1e-15
+        of the way across the support, at every dial position, std rises
+        strictly up to sigma = 1e12 * (upper - lower), the end of the
+        search. Beyond it BL2's std can turn down (mode within ~1e-3 of a
+        bound, sigma above ~1e20 * (upper - lower)) after rising slightly
+        past the uniform value, so a std is not always reached by a unique
+        sigma there; BL's keeps rising. The search does not go that far.
+
+        With an unbounded side (None) std grows without limit, so every
+        std > 0 is attainable.
+        """
+        return _sigma_from_std(self, mode, std, lower, upper)
 
     @staticmethod
     def bounds_to_shapes(mode, sigma, lower=None, upper=None):

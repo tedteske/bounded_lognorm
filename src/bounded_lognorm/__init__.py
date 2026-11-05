@@ -15,19 +15,21 @@ distributions; do not substitute one for the other.
 
 Usage: both are scipy location-scale families with shapes c (relative mode)
 and s (relative sigma) on [0, 1]; dist.from_bounds(mode, sigma, lower, upper)
-returns a frozen distribution in the bounds form.
+returns a frozen distribution in the bounds form, and dist.from_std(mode,
+std, lower, upper) the same with a standard deviation in place of sigma.
 
 Attribution (see ATTRIBUTION.md for the full, tiered breakdown and references):
   - Original work (2020-2024): Ted Teske -- the distributions, the mode/sigma
     reparametrization, the rv_continuous subclasses and their API.
   - Optimization & dial (2026): Ted Teske with Claude (Anthropic).
-  - Phase 2 math fixes, Phase 3 scipy.stats conformance, and the Phase 5
-    port of BL (2026): Ted Teske with Claude (Anthropic).
+  - Phase 2 math fixes, Phase 3 scipy.stats conformance, the Phase 5
+    port of BL, and from_std (0.4.0) (2026): Ted Teske with Claude
+    (Anthropic).
 """
 from ._bl2 import bounded_lognorm2_gen, bl2, PRECISION_DIAL
 from ._bl import bounded_lognorm_gen, bl
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = ["bounded_lognorm2_gen", "bl2", "bounded_lognorm_gen", "bl",
            "PRECISION_DIAL", "__version__"]

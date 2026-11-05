@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The project follows [Semantic Versioning](https://semver.org/); while the version is 0.x, minor releases may change the API.
 
+## 0.4.0 (2026-11-05)
+
+- **`from_std(mode, std, lower, upper)`** on both `bl` and `bl2`: a frozen distribution with a given standard deviation in place of sigma, for when what you know is a spread, such as a sample's standard deviation. **`sigma_from_std`** returns the sigma itself. Neither family has a closed-form inverse: BL's std is closed form but transcendental in sigma, and BL2's has none at all. So sigma is found by root finding on the instance's own `std`, to 1e-13 relative, in about 5 ms (BL) or 70 ms (BL2). Arrays broadcast elementwise, and `None` bounds work as in `from_bounds`.
+- A std at or near the uniform distribution's, (upper − lower)/√12, raises `ValueError` with the largest std attainable. Both families approach that value only logarithmically slowly as sigma grows.
+- Finding: std increases with sigma for both families up to sigma = 1e12 × (upper − lower), where the search stops. Beyond that, BL2's std, with the mode within ~1e-3 of a bound, rises slightly *past* the uniform's and then turns down; BL's does not. Confirmed to 30 digits. Evidence and the argument for why no closed form exists are in `docs/v0.4_from_std.md`.
+- Nothing else changes.
+
 ## 0.3.0 (2026-11-04)
 
 - **`profile_bound`**: a profile-likelihood confidence interval for the upper or lower bound, on both `bl` and `bl2`, with `fit_bounds`' fixed-parameter options. The bound is held at trial values and the likelihood maximized over the other free parameters; the interval is where the likelihood ratio stays below the chi-squared(1) quantile. An end the data cannot close is reported as `inf`. It gives an interval where a bootstrap cannot, for a bound at or near the sample extreme. Maximum likelihood only. Calibration evidence, including where it falls short, is in `docs/phase7_bound_intervals.md`.
